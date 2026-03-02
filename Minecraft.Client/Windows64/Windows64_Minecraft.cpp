@@ -360,10 +360,10 @@ void Windows64_UpdateGamma(unsigned short usGamma)
 	}
 
 	float gamma = (float)usGamma / 32768.0f;
-	if (gamma < 0.0f) gamma = 0.0f;
+	if (gamma < 0.01f) gamma = 0.01f;
 	if (gamma > 1.0f) gamma = 1.0f;
 
-	float invGamma = 1.0f - gamma * 0.5f;
+	float invGamma = 1.0f / (0.5f + gamma * 0.5f);
 
 	WORD ramp[3][256];
 	for (int i = 0; i < 256; i++)

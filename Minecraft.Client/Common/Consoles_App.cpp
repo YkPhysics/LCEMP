@@ -692,7 +692,7 @@ int CMinecraftApp::SetDefaultOptions(C_4JProfile::PROFILESETTINGS *pSettings,con
 {
 	SetGameSettings(iPad,eGameSetting_MusicVolume,DEFAULT_VOLUME_LEVEL);
 	SetGameSettings(iPad,eGameSetting_SoundFXVolume,DEFAULT_VOLUME_LEVEL);
-	SetGameSettings(iPad,eGameSetting_Gamma,50);
+	SetGameSettings(iPad,eGameSetting_Gamma,100);
 
 	// 4J-PB - Don't reset the difficult level if we're in-game
 	if(Minecraft::GetInstance()->level==NULL)
