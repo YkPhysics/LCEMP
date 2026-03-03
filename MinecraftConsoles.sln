@@ -68,7 +68,6 @@ Global
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.ContentPackage|Windows64.Build.0 = ContentPackage|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.ContentPackage|Xbox 360.ActiveCfg = ContentPackage|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|Durango.ActiveCfg = Debug|x64
-		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|Durango.Build.0 = Debug|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|ORBIS.ActiveCfg = Debug|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|PS3.ActiveCfg = Debug|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|PSVita.ActiveCfg = Debug|x64
@@ -76,7 +75,6 @@ Global
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|Windows64.Build.0 = Debug|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Debug|Xbox 360.ActiveCfg = Debug|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Release|Durango.ActiveCfg = Release|x64
-		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Release|Durango.Build.0 = Release|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Release|ORBIS.ActiveCfg = Release|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Release|PS3.ActiveCfg = Release|x64
 		{F046C3CE-9749-4823-B32B-D9CC10B1A2C8}.Release|PSVita.ActiveCfg = Release|x64
@@ -108,7 +106,6 @@ Global
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.ContentPackage|Windows64.ActiveCfg = ContentPackage|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.ContentPackage|Xbox 360.ActiveCfg = ContentPackage|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|Durango.ActiveCfg = Debug|x64
-		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|Durango.Build.0 = Debug|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|ORBIS.ActiveCfg = Debug|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|PS3.ActiveCfg = Debug|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|PSVita.ActiveCfg = Debug|x64
@@ -116,7 +113,6 @@ Global
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|Windows64.Build.0 = Debug|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Debug|Xbox 360.ActiveCfg = Debug|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Release|Durango.ActiveCfg = Release|x64
-		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Release|Durango.Build.0 = Release|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Release|ORBIS.ActiveCfg = Release|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Release|PS3.ActiveCfg = Release|x64
 		{1B9A8C38-DD48-448C-AA24-E1A35E0089A3}.Release|PSVita.ActiveCfg = Release|x64

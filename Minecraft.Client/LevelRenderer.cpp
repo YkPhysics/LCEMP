@@ -1794,6 +1794,11 @@ void LevelRenderer::renderAdvancedClouds(float alpha)
 
 bool LevelRenderer::updateDirtyChunks()
 {
+	if (level == NULL || mc == NULL || mc->level == NULL || globalChunkFlags == NULL)
+	{
+		return false;
+	}
+
 #ifdef _LARGE_WORLDS
 	std::list< std::pair<ClipChunk *, int> > nearestClipChunks;
 #endif

@@ -10,6 +10,9 @@
 #include "..\..\TexturePack.h"
 #include "..\..\DLCTexturePack.h"
 #include "..\..\..\Minecraft.World\StringHelpers.h"
+#ifdef _WINDOWS64
+#include "..\Network\PlatformNetworkManagerStub.h"
+#endif
 
 
 int IUIScene_PauseMenu::ExitGameDialogReturned(void *pParam,int iPad,C4JStorage::EMessageResult result)
@@ -393,6 +396,14 @@ int IUIScene_PauseMenu::ExitWorldThreadProc( void* lpParameter )
 // This function performs the meat of exiting from a level. It should be called from a thread other than the main thread.
 void IUIScene_PauseMenu::_ExitWorld(LPVOID lpParameter)
 {
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		app.DebugPrintf("Win64 LAN: Skipping _ExitWorld teardown during server transfer\n");
+		return;
+	}
+#endif
+
 	Minecraft *pMinecraft=Minecraft::GetInstance();
 
 	int exitReasonStringId = pMinecraft->progressRenderer->getCurrentTitle();

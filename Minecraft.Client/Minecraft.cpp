@@ -29,6 +29,7 @@
 #include "TitleScreen.h"
 #include "InventoryScreen.h"
 #include "InBedChatScreen.h"
+#include "ChatScreen.h"
 #include "AchievementPopup.h"
 #include "Input.h"
 #include "FrustumCuller.h"
@@ -172,7 +173,6 @@ Minecraft::Minecraft(Component *mouseComponent, Canvas *parent, MinecraftApplet 
 	//lastTickTime = System::currentTimeMillis();
 	recheckPlayerIn = 0;
 	running = true;
-	showFpsCounter = false;
 	unoccupiedQuadrant = -1;
 
 	Stats::init();
@@ -1481,7 +1481,7 @@ void Minecraft::run_middle()
 						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_DROP))
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_DROP;
 
-						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING) || g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING_ALT))
+						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING))
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_CRAFTING;
 
 						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_PAUSE))
@@ -1494,15 +1494,7 @@ void Minecraft::run_middle()
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_THIRD_PERSON;
 
 						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_DEBUG_INFO))
-						{
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_GAME_INFO;
-							//localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
-						}
-
-						if(g_KBMInput.IsKeyPressed(VK_F4))
-						{
-							showFpsCounter = !showFpsCounter;
-						}
 
 						int wheel = g_KBMInput.GetMouseWheel();
 						if (wheel > 0)
@@ -1529,7 +1521,7 @@ void Minecraft::run_middle()
 						localplayers[i]->ullDpad_filtered = 0;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_RIGHT))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_CHANGE_SKIN;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_UP))				localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_FLY_TOGGLE;
-						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_DOWN))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
+						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_DOWN))			//localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_LEFT))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_SPAWN_CREEPER;
 					}
 					else
@@ -2323,6 +2315,21 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 		if (!g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsWindowFocused())
 		{
 			g_KBMInput.SetMouseGrabbed(true);
+		}
+
+		if (iPad == 0)
+		{
+			const int vkChat = Keyboard::toVK(Keyboard::KEY_T);
+			static bool s_chatKeyWasDown = false;
+			const bool chatKeyDown = (vkChat != 0) && g_KBMInput.IsKeyDown(vkChat);
+			if (chatKeyDown && !s_chatKeyWasDown)
+			{
+				app.DebugPrintf("Chat hotkey pressed - opening ChatScreen");
+				setScreen(new ChatScreen());
+				s_chatKeyWasDown = true;
+				return;
+			}
+			s_chatKeyWasDown = chatKeyDown;
 		}
 #endif
 		// 4J-PB - add some tooltips if required
@@ -3691,7 +3698,7 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 					if (Keyboard.getEventKey() == options.keyDrop.key) {
 						player->drop();
 					}
-					if (isClientSide() && Keyboard.getEventKey() == options.keyChat.key) {
+					if ((isClientSide() || g_NetworkManager.IsInSession()) && Keyboard.getEventKey() == options.keyChat.key) {
 						setScreen(new ChatScreen());
 					}
 				}
@@ -4989,4 +4996,3 @@ int Minecraft::MustSignInReturnedPSN(void *pParam, int iPad, C4JStorage::EMessag
     return 0;
 }
 #endif
-

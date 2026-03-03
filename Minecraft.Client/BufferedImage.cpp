@@ -49,12 +49,11 @@ void BufferedImage::ByteFlip4(unsigned int &data)
 // 24-bits used (ie no alpha channel) whereas method 0 is a full 32-bit image with a valid alpha channel. 
 BufferedImage::BufferedImage(const wstring& File, bool filenameHasExtension /*=false*/, bool bTitleUpdateTexture /*=false*/, const wstring &drive /*=L""*/)
 {
-	HRESULT hr;
-	wstring wDrive;
-	wstring filePath;
-	filePath = File;
-
-	wDrive = drive;
+	HRESULT hr = ERROR_SUCCESS;
+	wstring wDrive = drive;
+	wstring filePath = File;
+	width = 0;
+	height = 0;
 	if(wDrive.empty())
 	{
 #ifdef _XBOX
@@ -170,9 +169,53 @@ BufferedImage::BufferedImage(const wstring& File, bool filenameHasExtension /*=f
 		ZeroMemory(&ImageInfo,sizeof(D3DXIMAGE_INFO));
 		hr=RenderManager.LoadTextureData(pchTextureName,&ImageInfo,&data[l]);
 
+#if defined(_WINDOWS64)
+		if (hr != ERROR_SUCCESS && l == 0 && drive.empty())
+		{
+			static const wchar_t *fallbackDrives[] =
+			{
+				L"Minecraft.Client/Common/",
+				L"Common/",
+				L"../Minecraft.Client/Common/",
+				L"../Common/",
+				L"..\\Minecraft.Client\\Common\\",
+				L"..\\Common\\"
+			};
+			const unsigned int fallbackDriveCount = sizeof(fallbackDrives) / sizeof(fallbackDrives[0]);
+
+			for (unsigned int f = 0; f < fallbackDriveCount; ++f)
+			{
+				const wstring fallbackDrive = fallbackDrives[f];
+				if (fallbackDrive == wDrive)
+				{
+					continue;
+				}
+
+				wstring fallbackName;
+				if (filenameHasExtension)
+				{
+					fallbackName = fallbackDrive + L"res" + filePath.substr(0, filePath.length());
+				}
+				else
+				{
+					fallbackName = fallbackDrive + L"res" + filePath.substr(0, filePath.length() - 4) + mipMapPath + L".png";
+				}
+
+				const char *fallbackTextureName = wstringtofilename(fallbackName);
+				hr = RenderManager.LoadTextureData(fallbackTextureName, &ImageInfo, &data[l]);
+				if (hr == ERROR_SUCCESS)
+				{
+					app.DebugPrintf("BufferedImage: fallback load succeeded for '%s'\n", fallbackTextureName);
+					wDrive = fallbackDrive;
+					break;
+				}
+			}
+		}
+#endif
 
 		if(hr!=ERROR_SUCCESS) 
 		{
+			app.DebugPrintf("BufferedImage: failed to load texture '%s' (hr=0x%08X)\n", pchTextureName, (unsigned int)hr);
 			// 4J - If we haven't loaded the non-mipmap version then exit the game
 			if( l == 0 )
 			{

@@ -2,6 +2,9 @@
 #include "UI.h"
 #include "UIScene_ConnectingProgress.h"
 #include "..\..\Minecraft.h"
+#ifdef _WINDOWS64
+#include "..\Network\PlatformNetworkManagerStub.h"
+#endif
 
 UIScene_ConnectingProgress::UIScene_ConnectingProgress(int iPad, void *_initData, UILayer *parentLayer) : UIScene(iPad, parentLayer)
 {
@@ -113,6 +116,16 @@ void UIScene_ConnectingProgress::handleTimerComplete(int id)
 	// Check if the connection failed
 	Minecraft *pMinecraft = Minecraft::GetInstance();
 
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		pMinecraft->m_connectionFailed[m_iPad] = false;
+		pMinecraft->m_connectionFailedReason[m_iPad] = DisconnectPacket::eDisconnect_None;
+		addTimer(0, m_timerTime);
+		return;
+	}
+#endif
+
 	if( pMinecraft->m_connectionFailed[m_iPad] || !g_NetworkManager.IsInSession() )
 	{
 
@@ -131,6 +144,9 @@ void UIScene_ConnectingProgress::handleTimerComplete(int id)
 			break;
 		case DisconnectPacket::eDisconnect_Kicked:
 			exitReasonStringId = IDS_DISCONNECTED_KICKED;
+			break;
+		case DisconnectPacket::eDisconnect_Banned:
+			exitReasonStringId = IDS_DISCONNECTED_BANNED;
 			break;
 		case DisconnectPacket::eDisconnect_NoUGC_AllLocal:
 			exitReasonStringId = IDS_NO_USER_CREATED_CONTENT_PRIVILEGE_ALL_LOCAL;

@@ -14,10 +14,12 @@
 //#include "XUI_CreateLoad.h"
 #include "..\..\..\Minecraft.World\StringHelpers.h"
 #include "..\..\..\Minecraft.World\Random.h"
+#include "..\..\..\Minecraft.World\LevelSettings.h"
 #include "..\..\MinecraftServer.h"
 #include "..\..\Minecraft.h"
 #include "..\..\Options.h"
 #include "..\..\Font.h"
+#include "..\UI\UIStructs.h"
 #include "..\..\Common\GameRules\ConsoleGameRules.h"
 
 #define DLC_INSTALLED_TIMER_ID 1
@@ -38,6 +40,7 @@ HRESULT CScene_Main::OnInit( XUIMessageInit* pInitData, BOOL& bHandled )
 	XuiControlSetText(m_Buttons[BUTTON_ACHIEVEMENTS],app.GetString(IDS_ACHIEVEMENTS));
 	XuiControlSetText(m_Buttons[BUTTON_HELPANDOPTIONS],app.GetString(IDS_HELP_AND_OPTIONS));
 	XuiControlSetText(m_Buttons[BUTTON_UNLOCKFULLGAME],app.GetString(IDS_UNLOCK_FULL_GAME));
+	XuiControlSetText(m_Buttons[BUTTON_MINIGAMES],L"LCE Minigames");
 	XuiControlSetText(m_Buttons[BUTTON_EXITGAME],app.GetString(IDS_EXIT_GAME));
 
 	m_Timer.SetShow(FALSE);
@@ -259,6 +262,20 @@ HRESULT CScene_Main::OnNotifyPressEx(HXUIOBJ hObjPressed, XUINotifyPress* pNotif
 				uiIDA[1]=IDS_CONFIRM_CANCEL;
 				StorageManager.RequestMessageBox(IDS_MUST_SIGN_IN_TITLE, IDS_MUST_SIGN_IN_TEXT, uiIDA, 2, pNotifyPressData->UserIndex,&CScene_Main::MustSignInReturned,this, app.GetStringTable());
 			}
+		}
+		break;
+	case BUTTON_MINIGAMES:
+		m_eAction = eAction_RunMinigames;
+		if(ProfileManager.IsSignedIn(pNotifyPressData->UserIndex))
+		{
+			RunMinigames(pNotifyPressData->UserIndex);
+		}
+		else
+		{
+			UINT uiIDA[2];
+			uiIDA[0]=IDS_CONFIRM_OK;
+			uiIDA[1]=IDS_CONFIRM_CANCEL;
+			StorageManager.RequestMessageBox(IDS_MUST_SIGN_IN_TITLE, IDS_MUST_SIGN_IN_TEXT, uiIDA, 2, pNotifyPressData->UserIndex,&CScene_Main::MustSignInReturned,this, app.GetStringTable());
 		}
 		break;
 	case BUTTON_EXITGAME:
@@ -672,6 +689,9 @@ int CScene_Main::MustSignInReturned(void *pParam,int iPad,C4JStorage::EMessageRe
 		case eAction_RunGame:
 			ProfileManager.RequestSignInUI(false, true, false,false,true,&CScene_Main::CreateLoad_SignInReturned,pClass ,iPad);
 			break;
+		case eAction_RunMinigames:
+			ProfileManager.RequestSignInUI(false, false, true,false,true,&CScene_Main::Minigames_SignInReturned,pClass,iPad );
+			break;
 		case eAction_RunLeaderboards:
 			ProfileManager.RequestSignInUI(false, false, true,false,true, &CScene_Main::Leaderboards_SignInReturned, pClass,iPad);
 			break;
@@ -694,6 +714,29 @@ int CScene_Main::MustSignInReturned(void *pParam,int iPad,C4JStorage::EMessageRe
 		for(int i=0;i<XUSER_MAX_COUNT;i++)
 		{
 			// if the user is valid, we should set the presence
+			if(ProfileManager.IsSignedIn(i))
+			{
+				ProfileManager.SetCurrentGameActivity(i,CONTEXT_PRESENCE_MENUS,false);
+			}
+		}
+	}
+
+	return 0;
+}
+
+int CScene_Main::Minigames_SignInReturned(void *pParam,bool bContinue,int iPad)
+{
+	CScene_Main* pClass = (CScene_Main*)pParam;
+
+	if(bContinue==true)
+	{
+		pClass->RunMinigames(iPad);
+	}
+	else
+	{
+		ProfileManager.SetLockedProfile(-1);
+		for(int i=0;i<XUSER_MAX_COUNT;i++)
+		{
 			if(ProfileManager.IsSignedIn(i))
 			{
 				ProfileManager.SetCurrentGameActivity(i,CONTEXT_PRESENCE_MENUS,false);
@@ -1029,6 +1072,50 @@ void CScene_Main::RunPlayGame(int iPad)
 			LoadTrial();
 		}
 	}
+}
+
+void CScene_Main::RunMinigames(int iPad)
+{
+	app.DebugPrintf("CScene_Main::RunMinigames - requested by pad %d\n", iPad);
+
+	int hostPad = iPad;
+	if(hostPad < 0 || !ProfileManager.IsSignedIn(hostPad))
+	{
+		hostPad = ProfileManager.GetPrimaryPad();
+	}
+
+	UINT uiIDA[1];
+	uiIDA[0]=IDS_OK;
+
+	if(hostPad < 0)
+	{
+		StorageManager.RequestMessageBox(IDS_MUST_SIGN_IN_TITLE, IDS_MUST_SIGN_IN_TEXT, uiIDA, 1, iPad, NULL, NULL, app.GetStringTable());
+		return;
+	}
+
+	if(ProfileManager.IsGuest(hostPad))
+	{
+		StorageManager.RequestMessageBox(IDS_PRO_GUESTPROFILE_TITLE, IDS_PRO_GUESTPROFILE_TEXT, uiIDA, 1);
+		return;
+	}
+
+	if(!ProfileManager.IsSignedInLive(hostPad))
+	{
+		StorageManager.RequestMessageBox(IDS_PRO_NOTONLINE_TITLE, IDS_PRO_NOTONLINE_TEXT, uiIDA, 1);
+		return;
+	}
+
+	ProfileManager.SetLockedProfile(hostPad);
+	ProfileManager.QuerySigninStatus();
+
+	Minecraft *pMinecraft=Minecraft::GetInstance();
+	pMinecraft->user->name = convStringToWstring(ProfileManager.GetGamertag(ProfileManager.GetPrimaryPad()));
+	app.ApplyGameSettingsChanged(hostPad);
+
+	LoadOrJoinMenuInitData *params = new LoadOrJoinMenuInitData();
+	params->bMinigamesMode = TRUE;
+	app.DebugPrintf("CScene_Main::RunMinigames - navigating to LoadOrJoin minigames hub (hostPad=%d)\n", hostPad);
+	app.NavigateToScene(hostPad, eUIScene_LoadOrJoinMenu, params);
 }
 
 HRESULT CScene_Main::OnTMSBanFileRetrieved()

@@ -14,6 +14,7 @@
 #include "..\Minecraft.World\net.minecraft.world.item.h"
 #include "..\Minecraft.World\SharedConstants.h"
 #include "Settings.h"
+#include "Common\Network\NetworkPlayerInterface.h"
 // #ifdef __PS3__
 // #include "PS3\Network\NetworkPlayerSony.h"
 // #endif
@@ -21,7 +22,9 @@
 Random *PendingConnection::random = new Random();
 
 #ifdef _WINDOWS64
-bool g_bRejectDuplicateNames = true;
+// Windows64 LAN/minigame testing commonly uses repeated display names across clients.
+// Keep joins permissive by default; duplicate names can still be rejected by toggling this.
+bool g_bRejectDuplicateNames = false;
 #endif
 
 PendingConnection::PendingConnection(MinecraftServer *server, Socket *socket, const wstring& id)
@@ -161,13 +164,51 @@ void PendingConnection::handleLogin(shared_ptr<LoginPacket> packet)
 
     //if (true)// 4J removed !server->onlineMode)
 	bool sentDisconnect = false;
+	if (server->getPlayers()->isNameBanned(name))
+	{
+		app.DebugPrintf("Rejecting banned player name: %ls\n", name.c_str());
+		disconnect(DisconnectPacket::eDisconnect_Banned);
+		return;
+	}
+	if (server->getPlayers()->isWhitelistEnabled() && !server->getPlayers()->isWhiteListed(name))
+	{
+		app.DebugPrintf("Rejecting non-whitelisted player name: %ls\n", name.c_str());
+		disconnect(DisconnectPacket::eDisconnect_Kicked);
+		return;
+	}
+	PlayerUID onlineXuidForBanCheck = packet->m_onlineXuid;
+#ifdef _WINDOWS64
+	BYTE onlineSmallIdForBanCheck = 255;
+	if (connection != NULL && connection->getSocket() != NULL)
+	{
+		INetworkPlayer *networkPlayer = connection->getSocket()->getPlayer();
+		if (networkPlayer != NULL)
+		{
+			onlineXuidForBanCheck = networkPlayer->GetUID();
+			onlineSmallIdForBanCheck = networkPlayer->GetSmallId();
+		}
+	}
+#endif
+	bool rejectAsBanned = server->getPlayers()->isXuidBanned(onlineXuidForBanCheck);
+#ifdef _WINDOWS64
+	if (rejectAsBanned)
+	{
+		// Windows64 stub player identity is slot-based, so suppress persistent ban rejections
+		// to avoid false "previously kicked" failures for new joiners.
+		app.DebugPrintf("PendingConnection::handleLogin - suppressed stale ban for %ls (smallId=%u)\n",
+			name.c_str(),
+			(unsigned int)onlineSmallIdForBanCheck);
+		rejectAsBanned = false;
+	}
+#endif
 
 	if( sentDisconnect )
 	{
 		// Do nothing
 	}
-	else if( server->getPlayers()->isXuidBanned( packet->m_onlineXuid ) )
+	else if( rejectAsBanned )
 	{
+		app.DebugPrintf("Rejecting banned XUID for player: %ls\n", name.c_str());
 		disconnect(DisconnectPacket::eDisconnect_Banned);
 	}
 #ifdef _WINDOWS64
@@ -186,7 +227,8 @@ void PendingConnection::handleLogin(shared_ptr<LoginPacket> packet)
 		if (nameTaken)
 		{
 			app.DebugPrintf("Rejecting duplicate name: %ls\n", name.c_str());
-			disconnect(DisconnectPacket::eDisconnect_Banned);
+			// Don't map duplicate-name rejection to "banned by host".
+			disconnect(DisconnectPacket::eDisconnect_Kicked);
 		}
 		else
 		{

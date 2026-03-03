@@ -47,7 +47,28 @@ std::vector<BYTE> WinsockNetLayer::s_freeSmallIds;
 bool g_Win64MultiplayerHost = false;
 bool g_Win64MultiplayerJoin = false;
 int g_Win64MultiplayerPort = WIN64_NET_DEFAULT_PORT;
-char g_Win64MultiplayerIP[256] = "127.0.0.1";
+int g_Win64MultiplayerMaxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+char g_Win64MultiplayerIP[256] = "0.0.0.0";
+BYTE WinsockNetLayer::s_maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+
+static void ConfigureConnectedSocket(SOCKET sock)
+{
+	if (sock == INVALID_SOCKET)
+	{
+		return;
+	}
+
+	int noDelay = 1;
+	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&noDelay, sizeof(noDelay));
+
+	int keepAlive = 1;
+	setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepAlive, sizeof(keepAlive));
+
+	int recvTimeoutMs = 30000;
+	int sendTimeoutMs = 30000;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&recvTimeoutMs, sizeof(recvTimeoutMs));
+	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&sendTimeoutMs, sizeof(sendTimeoutMs));
+}
 
 bool WinsockNetLayer::Initialize()
 {
@@ -145,6 +166,14 @@ bool WinsockNetLayer::HostGame(int port)
 	s_hostSmallId = 0;
 	s_nextSmallId = 1;
 	s_hostGamePort = port;
+	if (g_Win64MultiplayerMaxPlayers >= 1 && g_Win64MultiplayerMaxPlayers <= MINECRAFT_NET_MAX_PLAYERS)
+	{
+		s_maxPlayers = (BYTE)g_Win64MultiplayerMaxPlayers;
+	}
+	else
+	{
+		s_maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+	}
 
 	EnterCriticalSection(&s_freeSmallIdLock);
 	s_freeSmallIds.clear();
@@ -161,7 +190,15 @@ bool WinsockNetLayer::HostGame(int port)
 	char portStr[16];
 	sprintf_s(portStr, "%d", port);
 
-	int iResult = getaddrinfo(NULL, portStr, &hints, &result);
+	const char *bindIp = NULL;
+	if (g_Win64MultiplayerIP[0] != 0 &&
+		strcmp(g_Win64MultiplayerIP, "*") != 0 &&
+		strcmp(g_Win64MultiplayerIP, "0.0.0.0") != 0)
+	{
+		bindIp = g_Win64MultiplayerIP;
+	}
+
+	int iResult = getaddrinfo(bindIp, portStr, &hints, &result);
 	if (iResult != 0)
 	{
 		app.DebugPrintf("getaddrinfo failed: %d\n", iResult);
@@ -189,7 +226,8 @@ bool WinsockNetLayer::HostGame(int port)
 		return false;
 	}
 
-	iResult = listen(s_listenSocket, SOMAXCONN);
+	int backlog = (s_maxPlayers > 1) ? (int)s_maxPlayers : 1;
+	iResult = listen(s_listenSocket, backlog);
 	if (iResult == SOCKET_ERROR)
 	{
 		app.DebugPrintf("listen() failed: %d\n", WSAGetLastError());
@@ -203,7 +241,10 @@ bool WinsockNetLayer::HostGame(int port)
 
 	s_acceptThread = CreateThread(NULL, 0, AcceptThreadProc, NULL, 0, NULL);
 
-	app.DebugPrintf("Win64 LAN: Hosting on port %d\n", port);
+	app.DebugPrintf("Win64 LAN: Hosting on %s:%d (maxPlayers=%u)\n",
+		(bindIp != NULL) ? bindIp : "0.0.0.0",
+		port,
+		(unsigned int)s_maxPlayers);
 	return true;
 }
 
@@ -213,6 +254,14 @@ bool WinsockNetLayer::JoinGame(const char *ip, int port)
 
 	s_isHost = false;
 	s_hostSmallId = 0;
+	s_connected = false;
+	s_active = false;
+
+	if (s_hostConnectionSocket != INVALID_SOCKET)
+	{
+		closesocket(s_hostConnectionSocket);
+		s_hostConnectionSocket = INVALID_SOCKET;
+	}
 
 	struct addrinfo hints = {};
 	struct addrinfo *result = NULL;
@@ -231,37 +280,54 @@ bool WinsockNetLayer::JoinGame(const char *ip, int port)
 		return false;
 	}
 
-	s_hostConnectionSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-	if (s_hostConnectionSocket == INVALID_SOCKET)
+	bool connected = false;
+	BYTE assignedSmallId = 0;
+	const int maxAttempts = 12;
+
+	for (int attempt = 0; attempt < maxAttempts; ++attempt)
 	{
-		app.DebugPrintf("socket() failed: %d\n", WSAGetLastError());
-		freeaddrinfo(result);
-		return false;
+		s_hostConnectionSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+		if (s_hostConnectionSocket == INVALID_SOCKET)
+		{
+			app.DebugPrintf("socket() failed: %d\n", WSAGetLastError());
+			break;
+		}
+
+		ConfigureConnectedSocket(s_hostConnectionSocket);
+
+		iResult = connect(s_hostConnectionSocket, result->ai_addr, (int)result->ai_addrlen);
+		if (iResult == SOCKET_ERROR)
+		{
+			int err = WSAGetLastError();
+			app.DebugPrintf("connect() to %s:%d failed (attempt %d/%d): %d\n", ip, port, attempt + 1, maxAttempts, err);
+			closesocket(s_hostConnectionSocket);
+			s_hostConnectionSocket = INVALID_SOCKET;
+			Sleep(200);
+			continue;
+		}
+
+		BYTE assignBuf[1];
+		int bytesRecv = recv(s_hostConnectionSocket, (char *)assignBuf, 1, 0);
+		if (bytesRecv != 1)
+		{
+			app.DebugPrintf("Failed to receive small ID assignment from host (attempt %d/%d)\n", attempt + 1, maxAttempts);
+			closesocket(s_hostConnectionSocket);
+			s_hostConnectionSocket = INVALID_SOCKET;
+			Sleep(200);
+			continue;
+		}
+
+		assignedSmallId = assignBuf[0];
+		connected = true;
+		break;
 	}
-
-	int noDelay = 1;
-	setsockopt(s_hostConnectionSocket, IPPROTO_TCP, TCP_NODELAY, (const char *)&noDelay, sizeof(noDelay));
-
-	iResult = connect(s_hostConnectionSocket, result->ai_addr, (int)result->ai_addrlen);
 	freeaddrinfo(result);
-	if (iResult == SOCKET_ERROR)
-	{
-		app.DebugPrintf("connect() to %s:%d failed: %d\n", ip, port, WSAGetLastError());
-		closesocket(s_hostConnectionSocket);
-		s_hostConnectionSocket = INVALID_SOCKET;
-		return false;
-	}
 
-	BYTE assignBuf[1];
-	int bytesRecv = recv(s_hostConnectionSocket, (char *)assignBuf, 1, 0);
-	if (bytesRecv != 1)
+	if (!connected)
 	{
-		app.DebugPrintf("Failed to receive small ID assignment from host\n");
-		closesocket(s_hostConnectionSocket);
-		s_hostConnectionSocket = INVALID_SOCKET;
 		return false;
 	}
-	s_localSmallId = assignBuf[0];
+	s_localSmallId = assignedSmallId;
 
 	app.DebugPrintf("Win64 LAN: Connected to %s:%d, assigned smallId=%d\n", ip, port, s_localSmallId);
 
@@ -363,16 +429,22 @@ void WinsockNetLayer::HandleDataReceived(BYTE fromSmallId, BYTE toSmallId, unsig
 	INetworkPlayer *pPlayerFrom = g_NetworkManager.GetPlayerBySmallId(fromSmallId);
 	INetworkPlayer *pPlayerTo = g_NetworkManager.GetPlayerBySmallId(toSmallId);
 
-	if (pPlayerFrom == NULL || pPlayerTo == NULL) return;
-
 	if (s_isHost)
 	{
+		if (pPlayerFrom == NULL)
+		{
+			return;
+		}
 		::Socket *pSocket = pPlayerFrom->GetSocket();
 		if (pSocket != NULL)
 			pSocket->pushDataToQueue(data, dataSize, false);
 	}
 	else
 	{
+		if (pPlayerTo == NULL)
+		{
+			return;
+		}
 		::Socket *pSocket = pPlayerTo->GetSocket();
 		if (pSocket != NULL)
 			pSocket->pushDataToQueue(data, dataSize, true);
@@ -391,8 +463,7 @@ DWORD WINAPI WinsockNetLayer::AcceptThreadProc(LPVOID param)
 			break;
 		}
 
-		int noDelay = 1;
-		setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY, (const char *)&noDelay, sizeof(noDelay));
+		ConfigureConnectedSocket(clientSocket);
 
 		extern QNET_STATE _iQNetStubState;
 		if (_iQNetStubState != QNET_STATE_GAME_PLAY)
@@ -409,7 +480,7 @@ DWORD WINAPI WinsockNetLayer::AcceptThreadProc(LPVOID param)
 			assignedSmallId = s_freeSmallIds.back();
 			s_freeSmallIds.pop_back();
 		}
-		else if (s_nextSmallId < MINECRAFT_NET_MAX_PLAYERS)
+		else if (s_nextSmallId < s_maxPlayers)
 		{
 			assignedSmallId = s_nextSmallId++;
 		}
@@ -479,7 +550,8 @@ DWORD WINAPI WinsockNetLayer::RecvThreadProc(LPVOID param)
 	BYTE clientSmallId = s_connections[connIdx].smallId;
 	LeaveCriticalSection(&s_connectionsLock);
 
-	BYTE *recvBuf = new BYTE[WIN64_NET_RECV_BUFFER_SIZE];
+	std::vector<BYTE> recvBuf;
+	recvBuf.resize(WIN64_NET_RECV_BUFFER_SIZE);
 
 	while (s_active)
 	{
@@ -492,22 +564,29 @@ DWORD WINAPI WinsockNetLayer::RecvThreadProc(LPVOID param)
 
 		int packetSize = (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
 
-		if (packetSize <= 0 || packetSize > WIN64_NET_RECV_BUFFER_SIZE)
+		if (packetSize <= 0 || packetSize > WIN64_NET_MAX_PACKET_SIZE)
 		{
-			app.DebugPrintf("Win64 LAN: Invalid packet size %d from client smallId=%d\n", packetSize, clientSmallId);
+			app.DebugPrintf("Win64 LAN: Invalid packet size %d from client smallId=%d (max=%d)\n",
+				packetSize,
+				clientSmallId,
+				(int)WIN64_NET_MAX_PACKET_SIZE);
 			break;
 		}
 
-		if (!RecvExact(sock, recvBuf, packetSize))
+		if ((int)recvBuf.size() < packetSize)
+		{
+			recvBuf.resize(packetSize);
+			app.DebugPrintf("Win64 LAN: Resized host recv buffer to %d bytes for client smallId=%d\n", packetSize, clientSmallId);
+		}
+
+		if (!RecvExact(sock, &recvBuf[0], packetSize))
 		{
 			app.DebugPrintf("Win64 LAN: Client smallId=%d disconnected (body)\n", clientSmallId);
 			break;
 		}
 
-		HandleDataReceived(clientSmallId, s_hostSmallId, recvBuf, packetSize);
+		HandleDataReceived(clientSmallId, s_hostSmallId, &recvBuf[0], packetSize);
 	}
-
-	delete[] recvBuf;
 
 	EnterCriticalSection(&s_connectionsLock);
 	for (size_t i = 0; i < s_connections.size(); i++)
@@ -552,7 +631,8 @@ void WinsockNetLayer::PushFreeSmallId(BYTE smallId)
 
 DWORD WINAPI WinsockNetLayer::ClientRecvThreadProc(LPVOID param)
 {
-	BYTE *recvBuf = new BYTE[WIN64_NET_RECV_BUFFER_SIZE];
+	std::vector<BYTE> recvBuf;
+	recvBuf.resize(WIN64_NET_RECV_BUFFER_SIZE);
 
 	while (s_active && s_hostConnectionSocket != INVALID_SOCKET)
 	{
@@ -565,28 +645,34 @@ DWORD WINAPI WinsockNetLayer::ClientRecvThreadProc(LPVOID param)
 
 		int packetSize = (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
 
-		if (packetSize <= 0 || packetSize > WIN64_NET_RECV_BUFFER_SIZE)
+		if (packetSize <= 0 || packetSize > WIN64_NET_MAX_PACKET_SIZE)
 		{
-			app.DebugPrintf("Win64 LAN: Invalid packet size %d from host\n", packetSize);
+			app.DebugPrintf("Win64 LAN: Invalid packet size %d from host (max=%d)\n",
+				packetSize,
+				(int)WIN64_NET_MAX_PACKET_SIZE);
 			break;
 		}
 
-		if (!RecvExact(s_hostConnectionSocket, recvBuf, packetSize))
+		if ((int)recvBuf.size() < packetSize)
+		{
+			recvBuf.resize(packetSize);
+			app.DebugPrintf("Win64 LAN: Resized client recv buffer to %d bytes\n", packetSize);
+		}
+
+		if (!RecvExact(s_hostConnectionSocket, &recvBuf[0], packetSize))
 		{
 			app.DebugPrintf("Win64 LAN: Disconnected from host (body)\n");
 			break;
 		}
 
-		HandleDataReceived(s_hostSmallId, s_localSmallId, recvBuf, packetSize);
+		HandleDataReceived(s_hostSmallId, s_localSmallId, &recvBuf[0], packetSize);
 	}
-
-	delete[] recvBuf;
 
 	s_connected = false;
 	return 0;
 }
 
-bool WinsockNetLayer::StartAdvertising(int gamePort, const wchar_t *hostName, unsigned int gameSettings, unsigned int texPackId, unsigned char subTexId, unsigned short netVer)
+bool WinsockNetLayer::StartAdvertising(int gamePort, const wchar_t *hostName, unsigned int gameSettings, unsigned int texPackId, unsigned char subTexId, unsigned short netVer, unsigned char maxPlayers)
 {
 	if (s_advertising) return true;
 	if (!s_initialized) return false;
@@ -598,7 +684,7 @@ bool WinsockNetLayer::StartAdvertising(int gamePort, const wchar_t *hostName, un
 	s_advertiseData.gamePort = (WORD)gamePort;
 	wcsncpy_s(s_advertiseData.hostName, 32, hostName, _TRUNCATE);
 	s_advertiseData.playerCount = 1;
-	s_advertiseData.maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+	s_advertiseData.maxPlayers = (maxPlayers > 0) ? maxPlayers : MINECRAFT_NET_MAX_PLAYERS;
 	s_advertiseData.gameHostSettings = gameSettings;
 	s_advertiseData.texturePackParentId = texPackId;
 	s_advertiseData.subTexturePackId = subTexId;
@@ -645,6 +731,13 @@ void WinsockNetLayer::UpdateAdvertisePlayerCount(BYTE count)
 {
 	EnterCriticalSection(&s_advertiseLock);
 	s_advertiseData.playerCount = count;
+	LeaveCriticalSection(&s_advertiseLock);
+}
+
+void WinsockNetLayer::UpdateAdvertiseGameSettings(unsigned int gameSettings)
+{
+	EnterCriticalSection(&s_advertiseLock);
+	s_advertiseData.gameHostSettings = gameSettings;
 	LeaveCriticalSection(&s_advertiseLock);
 }
 

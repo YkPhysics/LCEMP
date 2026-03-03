@@ -4,8 +4,12 @@
 #include "stdafx.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include "GameConfig\Minecraft.spa.h"
 #include "..\MinecraftServer.h"
+#include "..\PlayerList.h"
+#include "..\ServerPlayer.h"
+#include "..\PlayerConnection.h"
 #include "..\LocalPlayer.h"
 #include "..\..\Minecraft.World\ItemInstance.h"
 #include "..\..\Minecraft.World\MapItem.h"
@@ -20,6 +24,8 @@
 
 #include "..\ClientConnection.h"
 #include "..\User.h"
+#include "..\ChatScreen.h"
+#include "..\TextEditScreen.h"
 #include "..\..\Minecraft.World\Socket.h"
 #include "..\KeyboardMouseInput.h"
 #include "..\..\Minecraft.World\ThreadName.h"
@@ -38,6 +44,9 @@
 #include "..\..\Minecraft.World\compression.h"
 #include "..\..\Minecraft.World\OldChunkStorage.h"
 #include "Network\WinsockNetLayer.h"
+#include <fstream>
+#include <sstream>
+#include <map>
 
 #include "Xbox/resource.h"
 
@@ -83,6 +92,867 @@ int g_iScreenHeight = 1080;
 
 char g_Win64Username[17] = {0};
 wchar_t g_Win64UsernameW[17] = {0};
+bool g_Win64DedicatedServerMode = false;
+extern HINSTANCE g_hInst;
+extern HWND g_hWnd;
+
+static bool g_dedicatedGuiEnabled = false;
+static HWND g_hDedicatedStatus = NULL;
+static HWND g_hDedicatedDetails = NULL;
+static HWND g_hDedicatedLog = NULL;
+static HWND g_hDedicatedStopButton = NULL;
+static HWND g_hDedicatedRefreshButton = NULL;
+static HWND g_hDedicatedCopyButton = NULL;
+static HWND g_hDedicatedSaveToggleButton = NULL;
+static HWND g_hDedicatedWhitelistToggleButton = NULL;
+static HWND g_hDedicatedKickAllButton = NULL;
+static HFONT g_hDedicatedFont = NULL;
+static HBRUSH g_hDedicatedBgBrush = NULL;
+static HBRUSH g_hDedicatedPanelBrush = NULL;
+static HBRUSH g_hDedicatedLogBrush = NULL;
+static DWORD g_dedicatedServerStartTick = 0;
+static int g_dedicatedPort = WIN64_NET_DEFAULT_PORT;
+static unsigned int g_dedicatedMaxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+static wstring g_dedicatedWorldName = L"Dedicated Server";
+static wstring g_dedicatedBindAddress = L"0.0.0.0";
+static bool g_networkManagerReady = false;
+
+static const UINT WM_APP_DEDICATED_APPEND_LOG = WM_APP + 101;
+static const UINT ID_DEDICATED_TIMER = 9001;
+static const int ID_DEDICATED_STOP_BUTTON = 9002;
+static const int ID_DEDICATED_REFRESH_BUTTON = 9003;
+static const int ID_DEDICATED_COPY_BUTTON = 9004;
+static const int ID_DEDICATED_SAVE_TOGGLE_BUTTON = 9005;
+static const int ID_DEDICATED_WHITELIST_TOGGLE_BUTTON = 9006;
+static const int ID_DEDICATED_KICKALL_BUTTON = 9007;
+
+static const COLORREF DEDICATED_BG_COLOR = RGB(16, 18, 22);
+static const COLORREF DEDICATED_PANEL_COLOR = RGB(28, 31, 36);
+static const COLORREF DEDICATED_TEXT_COLOR = RGB(225, 232, 240);
+static const COLORREF DEDICATED_MUTED_TEXT_COLOR = RGB(170, 182, 198);
+static const COLORREF DEDICATED_LOG_BG_COLOR = RGB(12, 14, 18);
+
+void Windows64_DedicatedGuiPushLog(const char *text);
+static void DedicatedGuiUpdateStatus();
+static void DedicatedGuiAppendLogNow(const char *text);
+static void DedicatedGuiCreateControls(HWND hWnd);
+static void DedicatedGuiLayout(HWND hWnd);
+static void DedicatedGuiUpdateControlLabels();
+static void DedicatedGuiCopyConnectInfo(HWND hWnd);
+static void DedicatedGuiKickAllPlayers();
+
+static void StandaloneWriteLogLine(const char *text)
+{
+	if (text == NULL)
+	{
+		return;
+	}
+
+	wchar_t exePath[MAX_PATH];
+	if (!GetModuleFileNameW(NULL, exePath, MAX_PATH))
+	{
+		return;
+	}
+
+	wstring logPath(exePath);
+	size_t lastSlash = logPath.find_last_of(L"\\/");
+	if (lastSlash != wstring::npos)
+	{
+		logPath = logPath.substr(0, lastSlash + 1) + L"StandaloneDebug.log";
+	}
+	else
+	{
+		logPath = L"StandaloneDebug.log";
+	}
+
+	HANDLE file = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+	{
+		return;
+	}
+
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+
+	char prefix[64];
+	_snprintf_s(prefix, sizeof(prefix), _TRUNCATE, "[%02d:%02d:%02d.%03d] ",
+		st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+
+	DWORD bytesWritten = 0;
+	WriteFile(file, prefix, (DWORD)strlen(prefix), &bytesWritten, NULL);
+	WriteFile(file, text, (DWORD)strlen(text), &bytesWritten, NULL);
+
+	size_t len = strlen(text);
+	if (len == 0 || (text[len - 1] != '\n' && text[len - 1] != '\r'))
+	{
+		const char *newline = "\r\n";
+		WriteFile(file, newline, (DWORD)strlen(newline), &bytesWritten, NULL);
+	}
+
+	CloseHandle(file);
+}
+
+static void StandaloneLog(const char *format, ...)
+{
+	char buffer[1024];
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(buffer, sizeof(buffer), format, ap);
+	va_end(ap);
+
+	StandaloneWriteLogLine(buffer);
+	Windows64_DedicatedGuiPushLog(buffer);
+}
+
+void Windows64_DedicatedGuiPushLog(const char *text)
+{
+	if (!g_dedicatedGuiEnabled || text == NULL || text[0] == 0 || g_hWnd == NULL)
+	{
+		return;
+	}
+
+	size_t len = strlen(text);
+	char *copy = new char[len + 1];
+	strcpy_s(copy, len + 1, text);
+
+	if (!PostMessage(g_hWnd, WM_APP_DEDICATED_APPEND_LOG, 0, (LPARAM)copy))
+	{
+		delete[] copy;
+	}
+}
+
+static void DedicatedGuiAppendLogNow(const char *text)
+{
+	if (g_hDedicatedLog == NULL || text == NULL || text[0] == 0)
+	{
+		return;
+	}
+
+	char line[1200];
+	_snprintf_s(line, sizeof(line), _TRUNCATE, "%s\r\n", text);
+
+	int wideLen = MultiByteToWideChar(CP_ACP, 0, line, -1, NULL, 0);
+	if (wideLen <= 1)
+	{
+		return;
+	}
+
+	wchar_t *wide = new wchar_t[wideLen];
+	MultiByteToWideChar(CP_ACP, 0, line, -1, wide, wideLen);
+
+	int curLen = GetWindowTextLengthW(g_hDedicatedLog);
+	if (curLen > 120000)
+	{
+		SendMessageW(g_hDedicatedLog, WM_SETTEXT, 0, (LPARAM)L"");
+		curLen = 0;
+	}
+
+	SendMessageW(g_hDedicatedLog, EM_SETSEL, curLen, curLen);
+	SendMessageW(g_hDedicatedLog, EM_REPLACESEL, FALSE, (LPARAM)wide);
+
+	delete[] wide;
+}
+
+static void DedicatedGuiUpdateStatus()
+{
+	if (!g_dedicatedGuiEnabled)
+	{
+		return;
+	}
+
+	if (g_hDedicatedStatus != NULL)
+	{
+		const bool gameStarted = app.GetGameStarted();
+		bool inSession = false;
+		int players = 0;
+		bool whitelistEnabled = false;
+		if (MinecraftServer::getInstance() != NULL && MinecraftServer::getInstance()->getPlayers() != NULL)
+		{
+			whitelistEnabled = MinecraftServer::getInstance()->getPlayers()->isWhitelistEnabled();
+		}
+		if (g_networkManagerReady)
+		{
+			inSession = g_NetworkManager.IsInSession();
+			players = g_NetworkManager.GetPlayerCount();
+		}
+		const wchar_t *state = gameStarted ? L"Online" : (inSession ? L"Starting" : L"Offline");
+		const bool saveDisabled = app.GetGameHostOption(eGameHostOption_DisableSaving) != 0;
+
+		wchar_t status[256];
+		swprintf_s(status, L"Status: %ls    Players: %d/%u    Saving: %ls    Whitelist: %ls",
+			state,
+			players,
+			g_dedicatedMaxPlayers,
+			saveDisabled ? L"Off" : L"On",
+			whitelistEnabled ? L"On" : L"Off");
+		SetWindowTextW(g_hDedicatedStatus, status);
+	}
+
+	if (g_hDedicatedDetails != NULL)
+	{
+		DWORD uptimeSeconds = 0;
+		if (g_dedicatedServerStartTick != 0)
+		{
+			uptimeSeconds = (GetTickCount() - g_dedicatedServerStartTick) / 1000;
+		}
+
+		const DWORD hours = uptimeSeconds / 3600;
+		const DWORD minutes = (uptimeSeconds % 3600) / 60;
+		const DWORD seconds = uptimeSeconds % 60;
+
+		wchar_t details[512];
+		swprintf_s(details,
+			L"World: %ls    Bind: %ls    Port: %d    Uptime: %02lu:%02lu:%02lu",
+			g_dedicatedWorldName.c_str(),
+			g_dedicatedBindAddress.c_str(),
+			g_dedicatedPort,
+			hours,
+			minutes,
+			seconds);
+		SetWindowTextW(g_hDedicatedDetails, details);
+	}
+
+	DedicatedGuiUpdateControlLabels();
+}
+
+static void DedicatedGuiUpdateControlLabels()
+{
+	if (!g_dedicatedGuiEnabled)
+	{
+		return;
+	}
+
+	const bool saveDisabled = app.GetGameHostOption(eGameHostOption_DisableSaving) != 0;
+	if (g_hDedicatedSaveToggleButton != NULL)
+	{
+		SetWindowTextW(g_hDedicatedSaveToggleButton, saveDisabled ? L"Enable Saving" : L"Disable Saving");
+	}
+
+	bool whitelistEnabled = false;
+	MinecraftServer *server = MinecraftServer::getInstance();
+	if (server != NULL && server->getPlayers() != NULL)
+	{
+		whitelistEnabled = server->getPlayers()->isWhitelistEnabled();
+	}
+	if (g_hDedicatedWhitelistToggleButton != NULL)
+	{
+		SetWindowTextW(g_hDedicatedWhitelistToggleButton, whitelistEnabled ? L"Whitelist: ON" : L"Whitelist: OFF");
+	}
+}
+
+static void DedicatedGuiCopyConnectInfo(HWND hWnd)
+{
+	wchar_t joinText[256];
+	swprintf_s(joinText, L"%ls:%d", g_dedicatedBindAddress.c_str(), g_dedicatedPort);
+
+	if (!OpenClipboard(hWnd))
+	{
+		StandaloneLog("Dedicated GUI: failed to open clipboard");
+		return;
+	}
+
+	EmptyClipboard();
+	const size_t chars = wcslen(joinText) + 1;
+	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, chars * sizeof(wchar_t));
+	if (hMem != NULL)
+	{
+		void *dst = GlobalLock(hMem);
+		if (dst != NULL)
+		{
+			memcpy(dst, joinText, chars * sizeof(wchar_t));
+			GlobalUnlock(hMem);
+			SetClipboardData(CF_UNICODETEXT, hMem);
+			char joinTextA[256] = { 0 };
+			wcstombs(joinTextA, joinText, sizeof(joinTextA) - 1);
+			StandaloneLog("Dedicated GUI: copied connect address %s", joinTextA);
+		}
+		else
+		{
+			GlobalFree(hMem);
+		}
+	}
+	CloseClipboard();
+}
+
+static void DedicatedGuiKickAllPlayers()
+{
+	MinecraftServer *server = MinecraftServer::getInstance();
+	if (server == NULL || server->getPlayers() == NULL)
+	{
+		return;
+	}
+
+	vector<shared_ptr<ServerPlayer> > toKick;
+	toKick.reserve(server->getPlayers()->players.size());
+	for (size_t i = 0; i < server->getPlayers()->players.size(); ++i)
+	{
+		shared_ptr<ServerPlayer> p = server->getPlayers()->players[i];
+		if (p == NULL || p->connection == NULL)
+		{
+			continue;
+		}
+		INetworkPlayer *np = p->connection->getNetworkPlayer();
+		if (np != NULL && np->IsLocal())
+		{
+			continue;
+		}
+		toKick.push_back(p);
+	}
+
+	for (size_t i = 0; i < toKick.size(); ++i)
+	{
+		toKick[i]->connection->setWasKicked();
+		toKick[i]->connection->disconnect(DisconnectPacket::eDisconnect_Kicked);
+	}
+	StandaloneLog("Dedicated GUI: kicked %u players", (unsigned int)toKick.size());
+}
+
+static void DedicatedGuiLayout(HWND hWnd)
+{
+	if (!g_dedicatedGuiEnabled || hWnd == NULL)
+	{
+		return;
+	}
+
+	RECT rc;
+	GetClientRect(hWnd, &rc);
+	const int width = rc.right - rc.left;
+	const int height = rc.bottom - rc.top;
+
+	const int margin = 14;
+	const int statusH = 32;
+	const int detailsH = 24;
+	const int buttonH = 32;
+	const int buttonGap = 8;
+
+	const int logTop = margin + statusH + detailsH + margin;
+	const int logBottom = height - margin - buttonH - margin;
+	const int logH = (logBottom > logTop) ? (logBottom - logTop) : 40;
+
+	if (g_hDedicatedStatus != NULL)
+	{
+		SetWindowPos(g_hDedicatedStatus, NULL, margin, margin, width - (margin * 2), statusH, SWP_NOZORDER);
+	}
+	if (g_hDedicatedDetails != NULL)
+	{
+		SetWindowPos(g_hDedicatedDetails, NULL, margin, margin + statusH, width - (margin * 2), detailsH, SWP_NOZORDER);
+	}
+	if (g_hDedicatedLog != NULL)
+	{
+		SetWindowPos(g_hDedicatedLog, NULL, margin, logTop, width - (margin * 2), logH, SWP_NOZORDER);
+	}
+	const int controlCount = 6;
+	const int buttonW = (width - (margin * 2) - (buttonGap * (controlCount - 1))) / controlCount;
+	int x = margin;
+	if (g_hDedicatedRefreshButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedRefreshButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+		x += buttonW + buttonGap;
+	}
+	if (g_hDedicatedCopyButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedCopyButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+		x += buttonW + buttonGap;
+	}
+	if (g_hDedicatedSaveToggleButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedSaveToggleButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+		x += buttonW + buttonGap;
+	}
+	if (g_hDedicatedWhitelistToggleButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedWhitelistToggleButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+		x += buttonW + buttonGap;
+	}
+	if (g_hDedicatedKickAllButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedKickAllButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+		x += buttonW + buttonGap;
+	}
+	if (g_hDedicatedStopButton != NULL)
+	{
+		SetWindowPos(g_hDedicatedStopButton, NULL, x, height - margin - buttonH, buttonW, buttonH, SWP_NOZORDER);
+	}
+}
+
+static void DedicatedGuiCreateControls(HWND hWnd)
+{
+	if (!g_dedicatedGuiEnabled || hWnd == NULL)
+	{
+		return;
+	}
+
+	g_hDedicatedFont = CreateFontW(
+		-17, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+		DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+	if (g_hDedicatedBgBrush == NULL) g_hDedicatedBgBrush = CreateSolidBrush(DEDICATED_BG_COLOR);
+	if (g_hDedicatedPanelBrush == NULL) g_hDedicatedPanelBrush = CreateSolidBrush(DEDICATED_PANEL_COLOR);
+	if (g_hDedicatedLogBrush == NULL) g_hDedicatedLogBrush = CreateSolidBrush(DEDICATED_LOG_BG_COLOR);
+
+	g_hDedicatedStatus = CreateWindowExW(
+		0, L"STATIC", L"Status: Starting",
+		WS_CHILD | WS_VISIBLE,
+		10, 10, 100, 20,
+		hWnd, NULL, g_hInst, NULL);
+
+	g_hDedicatedDetails = CreateWindowExW(
+		0, L"STATIC", L"",
+		WS_CHILD | WS_VISIBLE,
+		10, 34, 100, 20,
+		hWnd, NULL, g_hInst, NULL);
+
+	g_hDedicatedLog = CreateWindowExW(
+		WS_EX_CLIENTEDGE, L"EDIT", L"",
+		WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+		10, 60, 100, 100,
+		hWnd, NULL, g_hInst, NULL);
+
+	g_hDedicatedRefreshButton = CreateWindowExW(
+		0, L"BUTTON", L"Refresh",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_REFRESH_BUTTON, g_hInst, NULL);
+
+	g_hDedicatedCopyButton = CreateWindowExW(
+		0, L"BUTTON", L"Copy Join IP",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_COPY_BUTTON, g_hInst, NULL);
+
+	g_hDedicatedSaveToggleButton = CreateWindowExW(
+		0, L"BUTTON", L"Disable Saving",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_SAVE_TOGGLE_BUTTON, g_hInst, NULL);
+
+	g_hDedicatedWhitelistToggleButton = CreateWindowExW(
+		0, L"BUTTON", L"Whitelist: OFF",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_WHITELIST_TOGGLE_BUTTON, g_hInst, NULL);
+
+	g_hDedicatedKickAllButton = CreateWindowExW(
+		0, L"BUTTON", L"Kick All",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_KICKALL_BUTTON, g_hInst, NULL);
+
+	g_hDedicatedStopButton = CreateWindowExW(
+		0, L"BUTTON", L"Stop Server",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		10, 10, 100, 28,
+		hWnd, (HMENU)ID_DEDICATED_STOP_BUTTON, g_hInst, NULL);
+
+	if (g_hDedicatedFont != NULL)
+	{
+		if (g_hDedicatedStatus != NULL) SendMessage(g_hDedicatedStatus, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedDetails != NULL) SendMessage(g_hDedicatedDetails, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedLog != NULL) SendMessage(g_hDedicatedLog, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedRefreshButton != NULL) SendMessage(g_hDedicatedRefreshButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedCopyButton != NULL) SendMessage(g_hDedicatedCopyButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedSaveToggleButton != NULL) SendMessage(g_hDedicatedSaveToggleButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedWhitelistToggleButton != NULL) SendMessage(g_hDedicatedWhitelistToggleButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedKickAllButton != NULL) SendMessage(g_hDedicatedKickAllButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+		if (g_hDedicatedStopButton != NULL) SendMessage(g_hDedicatedStopButton, WM_SETFONT, (WPARAM)g_hDedicatedFont, TRUE);
+	}
+
+	SetWindowTextW(hWnd, L"Minecraft Dedicated Server");
+	SetTimer(hWnd, ID_DEDICATED_TIMER, 1000, NULL);
+	DedicatedGuiLayout(hWnd);
+	DedicatedGuiUpdateStatus();
+	DedicatedGuiAppendLogNow("Dedicated server GUI ready");
+}
+
+static LONG WINAPI StandaloneUnhandledExceptionFilter(EXCEPTION_POINTERS *exceptionInfo)
+{
+	if (exceptionInfo && exceptionInfo->ExceptionRecord)
+	{
+		StandaloneLog(
+			"Unhandled exception: code=0x%08X address=0x%p flags=0x%08X",
+			exceptionInfo->ExceptionRecord->ExceptionCode,
+			exceptionInfo->ExceptionRecord->ExceptionAddress,
+			exceptionInfo->ExceptionRecord->ExceptionFlags
+		);
+	}
+	else
+	{
+		StandaloneLog("Unhandled exception: exception info unavailable");
+	}
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static bool IsFilePath(const wstring &path)
+{
+	DWORD attrs = GetFileAttributesW(path.c_str());
+	return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static void ConfigureStandaloneWorkingDirectory()
+{
+	wchar_t exePath[MAX_PATH];
+	if (!GetModuleFileNameW(NULL, exePath, MAX_PATH))
+	{
+		StandaloneLog("ConfigureStandaloneWorkingDirectory: GetModuleFileNameW failed");
+		return;
+	}
+
+	wstring exeDir(exePath);
+	size_t lastSlash = exeDir.find_last_of(L"\\/");
+	if (lastSlash == wstring::npos)
+	{
+		StandaloneLog("ConfigureStandaloneWorkingDirectory: executable path has no directory separator");
+		return;
+	}
+	exeDir = exeDir.substr(0, lastSlash);
+
+	wstring root = exeDir;
+	for (int i = 0; i < 8; ++i)
+	{
+		wstring mediaFromClient = root + L"\\Minecraft.Client\\Common\\Media\\MediaWindows64.arc";
+		wstring mediaLocal = root + L"\\Common\\Media\\MediaWindows64.arc";
+		wstring fontFromClient = root + L"\\Minecraft.Client\\Common\\res\\font\\Mojangles_7.png";
+		wstring fontLocal = root + L"\\Common\\res\\font\\Mojangles_7.png";
+
+		if (IsFilePath(mediaFromClient) || IsFilePath(fontFromClient))
+		{
+			wstring clientRoot = root + L"\\Minecraft.Client";
+			if (!SetCurrentDirectoryW(clientRoot.c_str()))
+			{
+				char pathA[MAX_PATH * 2] = { 0 };
+				wcstombs(pathA, clientRoot.c_str(), sizeof(pathA) - 1);
+				StandaloneLog("ConfigureStandaloneWorkingDirectory: failed to set cwd to '%s' (err=%lu)", pathA, GetLastError());
+			}
+			else
+			{
+				char pathA[MAX_PATH * 2] = { 0 };
+				wcstombs(pathA, clientRoot.c_str(), sizeof(pathA) - 1);
+				StandaloneLog("ConfigureStandaloneWorkingDirectory: cwd set to '%s'", pathA);
+			}
+			return;
+		}
+		if (IsFilePath(mediaLocal) || IsFilePath(fontLocal))
+		{
+			if (!SetCurrentDirectoryW(root.c_str()))
+			{
+				char pathA[MAX_PATH * 2] = { 0 };
+				wcstombs(pathA, root.c_str(), sizeof(pathA) - 1);
+				StandaloneLog("ConfigureStandaloneWorkingDirectory: failed to set cwd to '%s' (err=%lu)", pathA, GetLastError());
+			}
+			else
+			{
+				char pathA[MAX_PATH * 2] = { 0 };
+				wcstombs(pathA, root.c_str(), sizeof(pathA) - 1);
+				StandaloneLog("ConfigureStandaloneWorkingDirectory: cwd set to '%s'", pathA);
+			}
+			return;
+		}
+		root += L"\\..";
+	}
+
+	char exeDirA[MAX_PATH * 2] = { 0 };
+	wcstombs(exeDirA, exeDir.c_str(), sizeof(exeDirA) - 1);
+	StandaloneLog("ConfigureStandaloneWorkingDirectory: no media/font root found from '%s'", exeDirA);
+}
+
+struct Win64LaunchConfig
+{
+	bool dedicated;
+	bool flatWorld;
+	bool disableSaving;
+	unsigned char maxPlayers;
+	int port;
+	string worldName;
+	string bindAddress;
+	string serverName;
+	bool whitelistEnabled;
+};
+
+static string TrimAscii(const string &in)
+{
+	size_t start = 0;
+	while (start < in.size() && isspace((unsigned char)in[start]))
+	{
+		++start;
+	}
+	size_t end = in.size();
+	while (end > start && isspace((unsigned char)in[end - 1]))
+	{
+		--end;
+	}
+	return in.substr(start, end - start);
+}
+
+static bool ParseBoolValue(const string &value, bool defaultValue)
+{
+	const string v = TrimAscii(value);
+	if (_stricmp(v.c_str(), "1") == 0 || _stricmp(v.c_str(), "true") == 0 || _stricmp(v.c_str(), "yes") == 0 || _stricmp(v.c_str(), "on") == 0)
+	{
+		return true;
+	}
+	if (_stricmp(v.c_str(), "0") == 0 || _stricmp(v.c_str(), "false") == 0 || _stricmp(v.c_str(), "no") == 0 || _stricmp(v.c_str(), "off") == 0)
+	{
+		return false;
+	}
+	return defaultValue;
+}
+
+static bool LoadDedicatedServerProperties(Win64LaunchConfig &cfg)
+{
+	const char *fileName = "dedicated-server.properties";
+	std::ifstream in(fileName);
+	if (!in.good())
+	{
+		std::ofstream out(fileName, std::ios::out | std::ios::trunc);
+		if (out.good())
+		{
+			out << "# LCE Dedicated Server Properties\n";
+			out << "dedicated=true\n";
+			out << "server-name=" << cfg.serverName << "\n";
+			out << "world-name=" << cfg.worldName << "\n";
+			out << "bind-address=" << cfg.bindAddress << "\n";
+			out << "server-port=" << cfg.port << "\n";
+			out << "max-players=" << (int)cfg.maxPlayers << "\n";
+			out << "level-type=" << (cfg.flatWorld ? "flat" : "normal") << "\n";
+			out << "save-world=" << (cfg.disableSaving ? "false" : "true") << "\n";
+			out << "whitelist=" << (cfg.whitelistEnabled ? "true" : "false") << "\n";
+		}
+		return false;
+	}
+
+	std::map<std::string, std::string> kv;
+	std::string line;
+	while (std::getline(in, line))
+	{
+		line = TrimAscii(line);
+		if (line.empty() || line[0] == '#' || line[0] == ';')
+		{
+			continue;
+		}
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+		{
+			continue;
+		}
+		std::string key = TrimAscii(line.substr(0, eq));
+		std::string value = TrimAscii(line.substr(eq + 1));
+		kv[key] = value;
+	}
+
+	if (kv.find("dedicated") != kv.end()) cfg.dedicated = ParseBoolValue(kv["dedicated"], cfg.dedicated);
+	if (kv.find("server-name") != kv.end() && !kv["server-name"].empty()) cfg.serverName = kv["server-name"];
+	if (kv.find("world-name") != kv.end() && !kv["world-name"].empty()) cfg.worldName = kv["world-name"];
+	if (kv.find("bind-address") != kv.end() && !kv["bind-address"].empty()) cfg.bindAddress = kv["bind-address"];
+	if (kv.find("server-port") != kv.end())
+	{
+		const int p = atoi(kv["server-port"].c_str());
+		if (p > 0 && p <= 65535) cfg.port = p;
+	}
+	if (kv.find("max-players") != kv.end())
+	{
+		const int mp = atoi(kv["max-players"].c_str());
+		if (mp >= 1 && mp <= MINECRAFT_NET_MAX_PLAYERS) cfg.maxPlayers = (unsigned char)mp;
+	}
+	if (kv.find("level-type") != kv.end())
+	{
+		cfg.flatWorld = (_stricmp(kv["level-type"].c_str(), "flat") == 0);
+	}
+	if (kv.find("save-world") != kv.end())
+	{
+		const bool saveWorld = ParseBoolValue(kv["save-world"], !cfg.disableSaving);
+		cfg.disableSaving = !saveWorld;
+	}
+	if (kv.find("whitelist") != kv.end())
+	{
+		cfg.whitelistEnabled = ParseBoolValue(kv["whitelist"], cfg.whitelistEnabled);
+	}
+
+	return true;
+}
+
+static vector<string> TokenizeCommandLine(const char *cmdLine)
+{
+	vector<string> tokens;
+	if (cmdLine == NULL || cmdLine[0] == 0)
+	{
+		return tokens;
+	}
+
+	string current;
+	bool inQuotes = false;
+	for (const char *p = cmdLine; *p != 0; ++p)
+	{
+		const char ch = *p;
+		if (ch == '"')
+		{
+			inQuotes = !inQuotes;
+			continue;
+		}
+
+		if (!inQuotes && isspace((unsigned char)ch))
+		{
+			if (!current.empty())
+			{
+				tokens.push_back(current);
+				current.clear();
+			}
+		}
+		else
+		{
+			current.push_back(ch);
+		}
+	}
+
+	if (!current.empty())
+	{
+		tokens.push_back(current);
+	}
+	return tokens;
+}
+
+static bool HasCommandToken(const vector<string> &tokens, const char *flag)
+{
+	for (size_t i = 0; i < tokens.size(); ++i)
+	{
+		if (_stricmp(tokens[i].c_str(), flag) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool GetCommandValue(const vector<string> &tokens, const char *flag, string &value)
+{
+	for (size_t i = 0; i < tokens.size(); ++i)
+	{
+		if (_stricmp(tokens[i].c_str(), flag) == 0)
+		{
+			if ((i + 1) < tokens.size())
+			{
+				value = tokens[i + 1];
+				return true;
+			}
+			return false;
+		}
+
+		const size_t flagLen = strlen(flag);
+		if (_strnicmp(tokens[i].c_str(), flag, flagLen) == 0 && tokens[i].size() > (flagLen + 1) && tokens[i][flagLen] == '=')
+		{
+			value = tokens[i].substr(flagLen + 1);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool StartDedicatedServer(const Win64LaunchConfig &launchConfig)
+{
+	Minecraft *pMinecraft = Minecraft::GetInstance();
+	if (pMinecraft == NULL)
+	{
+		StandaloneLog("Dedicated: Minecraft instance is null");
+		return false;
+	}
+
+	app.DebugPrintf("Dedicated: starting with world=\"%s\" flat=%d disableSaving=%d maxPlayers=%u bind=%s port=%d\n",
+		launchConfig.worldName.c_str(),
+		launchConfig.flatWorld ? 1 : 0,
+		launchConfig.disableSaving ? 1 : 0,
+		(unsigned int)launchConfig.maxPlayers,
+		g_Win64MultiplayerIP,
+		launchConfig.port);
+
+	StorageManager.SetSaveDisabled(launchConfig.disableSaving);
+	app.SetGameHostOption(eGameHostOption_DisableSaving, launchConfig.disableSaving ? 1 : 0);
+
+	app.setLevelGenerationOptions(NULL);
+	app.ReleaseSaveThumbnail();
+	ProfileManager.SetLockedProfile(0);
+	ProfileManager.SetPrimaryPad(0);
+	pMinecraft->user->name = g_Win64UsernameW;
+	app.ApplyGameSettingsChanged(0);
+
+	MinecraftServer::resetFlags();
+	app.SetTutorialMode(false);
+	app.SetCorruptSaveDeleted(false);
+	app.ClearTerrainFeaturePosition();
+
+	wstring worldNameW = convStringToWstring(launchConfig.worldName);
+	StorageManager.ResetSaveData();
+	StorageManager.SetSaveTitle(worldNameW.c_str());
+
+	NetworkGameInitData *param = new NetworkGameInitData();
+	ZeroMemory(param, sizeof(NetworkGameInitData));
+	param->seed = 0;
+	param->saveData = NULL;
+
+	app.SetGameHostOption(eGameHostOption_Difficulty, pMinecraft->options->difficulty);
+	app.SetGameHostOption(eGameHostOption_FriendsOfFriends, 1);
+	app.SetGameHostOption(eGameHostOption_Gamertags, 1);
+	app.SetGameHostOption(eGameHostOption_BedrockFog, 1);
+	app.SetGameHostOption(eGameHostOption_GameType, 0);
+	app.SetGameHostOption(eGameHostOption_LevelType, launchConfig.flatWorld ? 1 : 0);
+	app.SetGameHostOption(eGameHostOption_Structures, launchConfig.flatWorld ? 0 : 1);
+	app.SetGameHostOption(eGameHostOption_BonusChest, 0);
+	app.SetGameHostOption(eGameHostOption_PvP, 1);
+	app.SetGameHostOption(eGameHostOption_TrustPlayers, 1);
+	app.SetGameHostOption(eGameHostOption_FireSpreads, 1);
+	app.SetGameHostOption(eGameHostOption_TNT, 1);
+	app.SetGameHostOption(eGameHostOption_HostCanFly, 1);
+	app.SetGameHostOption(eGameHostOption_HostCanChangeHunger, 1);
+	app.SetGameHostOption(eGameHostOption_HostCanBeInvisible, 1);
+	param->settings = app.GetGameHostOption(eGameHostOption_All);
+
+	unsigned char publicSlots = launchConfig.maxPlayers;
+	if (publicSlots == 0 || publicSlots > MINECRAFT_NET_MAX_PLAYERS)
+	{
+		publicSlots = MINECRAFT_NET_MAX_PLAYERS;
+	}
+
+	g_NetworkManager.SetPrivateGame(false);
+	g_NetworkManager.HostGame(0, true, false, publicSlots, 0);
+	// Keep a host network-player object for server-side queue/system bookkeeping.
+	// The dedicated path now suppresses slot 0 from active gameplay player lists.
+	g_NetworkManager.FakeLocalPlayerJoined();
+
+	app.SetAutosaveTimerTime();
+
+	C4JThread *thread = new C4JThread(&CGameNetworkManager::RunNetworkGameThreadProc, (LPVOID)param, "RunNetworkGame");
+	thread->Run();
+
+	const DWORD waitStart = GetTickCount();
+	while (!app.GetGameStarted())
+	{
+		g_NetworkManager.DoWork();
+		app.HandleXuiActions();
+		Sleep(10);
+
+		if (MinecraftServer::serverHalted())
+		{
+			StandaloneLog("Dedicated: server halted during startup");
+			return false;
+		}
+
+		if ((GetTickCount() - waitStart) > 45000)
+		{
+			StandaloneLog("Dedicated: startup timed out");
+			return false;
+		}
+	}
+
+	g_dedicatedServerStartTick = GetTickCount();
+	MinecraftServer *serverInstance = MinecraftServer::getInstance();
+	if (serverInstance != NULL && serverInstance->getPlayers() != NULL)
+	{
+		serverInstance->getPlayers()->setWhitelistEnabled(launchConfig.whitelistEnabled);
+		app.DebugPrintf("Dedicated: whitelist %s\n", launchConfig.whitelistEnabled ? "enabled" : "disabled");
+	}
+	DedicatedGuiUpdateStatus();
+	StandaloneLog("Dedicated: server is online");
+	return true;
+}
 
 void DefineActions(void)
 {
@@ -300,6 +1170,43 @@ static bool g_isFullscreen = false;
 static RECT g_windowedRect = {};
 static LONG g_windowedStyle = 0;
 
+static void ForwardPrintableKeyToTextEdit(Minecraft *mc, WPARAM wParam, LPARAM lParam)
+{
+	if (mc == NULL || mc->screen == NULL || dynamic_cast<TextEditScreen *>(mc->screen) == NULL)
+	{
+		return;
+	}
+
+	// Ignore ctrl/alt combos so gameplay shortcuts do not inject text.
+	if ((GetKeyState(VK_CONTROL) & 0x8000) || (GetKeyState(VK_MENU) & 0x8000))
+	{
+		return;
+	}
+
+	BYTE keyState[256];
+	if (!GetKeyboardState(keyState))
+	{
+		return;
+	}
+
+	const UINT vkCode = (UINT)wParam;
+	const UINT scanCode = (UINT)((lParam >> 16) & 0xFF);
+	wchar_t chars[4] = {};
+	const int produced = ToUnicode(vkCode, scanCode, keyState, chars, 4, 0);
+	if (produced <= 0)
+	{
+		return;
+	}
+
+	for (int i = 0; i < produced; ++i)
+	{
+		if (chars[i] >= 32)
+		{
+			mc->screen->HandleKeyPressed(chars[i], 0);
+		}
+	}
+}
+
 void ToggleFullscreen()
 {
 	if (!g_hWnd) return;
@@ -416,6 +1323,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		// Parse the menu selections:
 		switch (wmId)
 		{
+		case ID_DEDICATED_REFRESH_BUTTON:
+			DedicatedGuiUpdateStatus();
+			break;
+		case ID_DEDICATED_COPY_BUTTON:
+			DedicatedGuiCopyConnectInfo(hWnd);
+			break;
+		case ID_DEDICATED_SAVE_TOGGLE_BUTTON:
+		{
+			const bool disableSaving = app.GetGameHostOption(eGameHostOption_DisableSaving) == 0;
+			StorageManager.SetSaveDisabled(disableSaving);
+			app.SetGameHostOption(eGameHostOption_DisableSaving, disableSaving ? 1 : 0);
+			DedicatedGuiUpdateStatus();
+			StandaloneLog("Dedicated GUI: world saving %s", disableSaving ? "disabled" : "enabled");
+			break;
+		}
+		case ID_DEDICATED_WHITELIST_TOGGLE_BUTTON:
+		{
+			MinecraftServer *server = MinecraftServer::getInstance();
+			if (server != NULL && server->getPlayers() != NULL)
+			{
+				const bool enabled = !server->getPlayers()->isWhitelistEnabled();
+				server->getPlayers()->setWhitelistEnabled(enabled);
+				StandaloneLog("Dedicated GUI: whitelist %s", enabled ? "enabled" : "disabled");
+			}
+			DedicatedGuiUpdateStatus();
+			break;
+		}
+		case ID_DEDICATED_KICKALL_BUTTON:
+			DedicatedGuiKickAllPlayers();
+			DedicatedGuiUpdateStatus();
+			break;
+		case ID_DEDICATED_STOP_BUTTON:
+			StandaloneLog("Dedicated: stop requested from GUI");
+			DestroyWindow(hWnd);
+			break;
+
 		case IDM_EXIT:
 			DestroyWindow(hWnd);
 			break;
@@ -426,12 +1369,71 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		break;
 	case WM_PAINT:
 		hdc = BeginPaint(hWnd, &ps);
-		// TODO: Add any drawing code here...
+		if (g_hDedicatedBgBrush != NULL)
+		{
+			RECT rc;
+			GetClientRect(hWnd, &rc);
+			FillRect(hdc, &rc, g_hDedicatedBgBrush);
+		}
 		EndPaint(hWnd, &ps);
 		break;
+	case WM_ERASEBKGND:
+		return 1;
+	case WM_SIZE:
+		DedicatedGuiLayout(hWnd);
+		break;
+	case WM_TIMER:
+		if (wParam == ID_DEDICATED_TIMER)
+		{
+			DedicatedGuiUpdateStatus();
+		}
+		break;
+	case WM_APP_DEDICATED_APPEND_LOG:
+	{
+		char *line = (char *)lParam;
+		if (line != NULL)
+		{
+			DedicatedGuiAppendLogNow(line);
+			delete[] line;
+		}
+		break;
+	}
 	case WM_DESTROY:
+		KillTimer(hWnd, ID_DEDICATED_TIMER);
+		if (g_hDedicatedBgBrush != NULL) { DeleteObject(g_hDedicatedBgBrush); g_hDedicatedBgBrush = NULL; }
+		if (g_hDedicatedPanelBrush != NULL) { DeleteObject(g_hDedicatedPanelBrush); g_hDedicatedPanelBrush = NULL; }
+		if (g_hDedicatedLogBrush != NULL) { DeleteObject(g_hDedicatedLogBrush); g_hDedicatedLogBrush = NULL; }
+		if (g_hDedicatedFont != NULL) { DeleteObject(g_hDedicatedFont); g_hDedicatedFont = NULL; }
 		PostQuitMessage(0);
 		break;
+	case WM_CTLCOLORSTATIC:
+	{
+		HDC controlDc = (HDC)wParam;
+		HWND controlWnd = (HWND)lParam;
+		if (controlWnd == g_hDedicatedLog)
+		{
+			SetTextColor(controlDc, DEDICATED_MUTED_TEXT_COLOR);
+			SetBkColor(controlDc, DEDICATED_LOG_BG_COLOR);
+			return (LRESULT)(g_hDedicatedLogBrush != NULL ? g_hDedicatedLogBrush : GetStockObject(BLACK_BRUSH));
+		}
+		SetTextColor(controlDc, DEDICATED_TEXT_COLOR);
+		SetBkMode(controlDc, TRANSPARENT);
+		return (LRESULT)(g_hDedicatedBgBrush != NULL ? g_hDedicatedBgBrush : GetStockObject(BLACK_BRUSH));
+	}
+	case WM_CTLCOLOREDIT:
+	{
+		HDC controlDc = (HDC)wParam;
+		SetTextColor(controlDc, DEDICATED_MUTED_TEXT_COLOR);
+		SetBkColor(controlDc, DEDICATED_LOG_BG_COLOR);
+		return (LRESULT)(g_hDedicatedLogBrush != NULL ? g_hDedicatedLogBrush : GetStockObject(BLACK_BRUSH));
+	}
+	case WM_CTLCOLORBTN:
+	{
+		HDC controlDc = (HDC)wParam;
+		SetTextColor(controlDc, DEDICATED_TEXT_COLOR);
+		SetBkColor(controlDc, DEDICATED_PANEL_COLOR);
+		return (LRESULT)(g_hDedicatedPanelBrush != NULL ? g_hDedicatedPanelBrush : GetStockObject(GRAY_BRUSH));
+	}
 
 	case WM_KILLFOCUS:
 		g_KBMInput.ClearAllState();
@@ -447,6 +1449,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
 	{
+		const int rawVk = (int)wParam;
 		int vk = (int)wParam;
 		if (vk == VK_F11)
 		{
@@ -460,6 +1463,36 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		else if (vk == VK_MENU)
 			vk = (lParam & (1 << 24)) ? VK_RMENU : VK_LMENU;
 		g_KBMInput.OnKeyDown(vk);
+
+		// The old Keyboard.next() event pump is disabled on this platform build.
+		// Forward key controls directly to chat so Enter/Backspace/Escape work.
+		Minecraft *mc = Minecraft::GetInstance();
+		if (mc != NULL && mc->screen != NULL &&
+			(dynamic_cast<ChatScreen *>(mc->screen) != NULL || dynamic_cast<TextEditScreen *>(mc->screen) != NULL))
+		{
+			if (vk == VK_RETURN)
+			{
+				mc->screen->HandleKeyPressed(0, Keyboard::KEY_RETURN);
+			}
+			else if (vk == VK_BACK)
+			{
+				mc->screen->HandleKeyPressed(0, Keyboard::KEY_BACK);
+			}
+			else if (vk == VK_ESCAPE)
+			{
+				mc->screen->HandleKeyPressed(0, Keyboard::KEY_ESCAPE);
+			}
+			else if (vk == VK_UP)
+			{
+				mc->screen->HandleKeyPressed(0, Keyboard::KEY_UP);
+			}
+			else if (vk == VK_DOWN)
+			{
+				mc->screen->HandleKeyPressed(0, Keyboard::KEY_DOWN);
+			}
+
+			ForwardPrintableKeyToTextEdit(mc, (WPARAM)rawVk, lParam);
+		}
 		break;
 	}
 	case WM_KEYUP:
@@ -502,6 +1535,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_MOUSEWHEEL:
 		g_KBMInput.OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam));
 		break;
+
+	case WM_CHAR:
+	{
+		// Route printable text to chat input.
+		// Sign editing receives text from WM_KEYDOWN+ToUnicode to avoid missing WM_CHAR cases.
+		Minecraft *mc = Minecraft::GetInstance();
+		if (mc != NULL && mc->screen != NULL &&
+			(dynamic_cast<ChatScreen *>(mc->screen) != NULL))
+		{
+			wchar_t ch = (wchar_t)wParam;
+			if (ch >= 32)
+			{
+				mc->screen->HandleKeyPressed(ch, 0);
+			}
+			return 0;
+		}
+		break;
+	}
 
 	case WM_INPUT:
 		{
@@ -660,7 +1711,7 @@ app.DebugPrintf("width: %d, height: %d\n", width, height);
 
 	UINT createDeviceFlags = 0;
 #ifdef _DEBUG
-	createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+	//createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
 	D3D_DRIVER_TYPE driverTypes[] =
@@ -793,6 +1844,32 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 
+	SetUnhandledExceptionFilter(StandaloneUnhandledExceptionFilter);
+	StandaloneLog("==== Standalone startup begin ====");
+
+	ConfigureStandaloneWorkingDirectory();
+	wchar_t cwd[MAX_PATH];
+	if (GetCurrentDirectoryW(MAX_PATH, cwd))
+	{
+		char cwdA[MAX_PATH * 2];
+		ZeroMemory(cwdA, sizeof(cwdA));
+		wcstombs(cwdA, cwd, sizeof(cwdA) - 1);
+		StandaloneLog("Current directory: %s", cwdA);
+	}
+
+	Win64LaunchConfig launchConfig;
+	launchConfig.dedicated = false;
+	launchConfig.flatWorld = true;
+	launchConfig.disableSaving = true;
+	launchConfig.maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+	launchConfig.port = WIN64_NET_DEFAULT_PORT;
+	launchConfig.worldName = "LCE Dedicated Server";
+	launchConfig.bindAddress = "0.0.0.0";
+	launchConfig.serverName = "LCE Dedicated";
+	launchConfig.whitelistEnabled = false;
+
+	LoadDedicatedServerProperties(launchConfig);
+
 	if(lpCmdLine)
 	{
 		if(lpCmdLine[0] == '1')
@@ -815,28 +1892,101 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			//g_iScreenWidth = 960;
 			//g_iScreenHeight = 544;
 		}
+	}
 
-		char cmdLineA[1024];
-		strncpy_s(cmdLineA, sizeof(cmdLineA), lpCmdLine, _TRUNCATE);
+	vector<string> cmdTokens = TokenizeCommandLine(lpCmdLine);
 
-		char *nameArg = strstr(cmdLineA, "-name ");
-		if (nameArg)
+	launchConfig.dedicated = HasCommandToken(cmdTokens, "-dedicated");
+	g_Win64DedicatedServerMode = launchConfig.dedicated;
+	if (HasCommandToken(cmdTokens, "-normal"))
+	{
+		launchConfig.flatWorld = false;
+	}
+	if (HasCommandToken(cmdTokens, "-flat"))
+	{
+		launchConfig.flatWorld = true;
+	}
+	if (HasCommandToken(cmdTokens, "-save"))
+	{
+		launchConfig.disableSaving = false;
+	}
+	if (HasCommandToken(cmdTokens, "-nosave"))
+	{
+		launchConfig.disableSaving = true;
+	}
+
+	string value;
+	if (GetCommandValue(cmdTokens, "-name", value) && !value.empty())
+	{
+		strncpy_s(g_Win64Username, 17, value.c_str(), _TRUNCATE);
+	}
+	if (GetCommandValue(cmdTokens, "-servername", value) && !value.empty())
+	{
+		launchConfig.serverName = value;
+	}
+	if (GetCommandValue(cmdTokens, "-world", value) && !value.empty())
+	{
+		launchConfig.worldName = value;
+	}
+	if (GetCommandValue(cmdTokens, "-port", value) && !value.empty())
+	{
+		int port = atoi(value.c_str());
+		if (port > 0 && port <= 65535)
 		{
-			nameArg += 6;
-			while (*nameArg == ' ') nameArg++;
-			char nameBuf[17];
-			int n = 0;
-			while (nameArg[n] && nameArg[n] != ' ' && n < 16) { nameBuf[n] = nameArg[n]; n++; }
-			nameBuf[n] = 0;
-			strncpy_s(g_Win64Username, 17, nameBuf, _TRUNCATE);
+			launchConfig.port = port;
 		}
 	}
+	if (GetCommandValue(cmdTokens, "-bind", value) && !value.empty())
+	{
+		launchConfig.bindAddress = value;
+	}
+	if (GetCommandValue(cmdTokens, "-maxplayers", value) && !value.empty())
+	{
+		int maxPlayers = atoi(value.c_str());
+		if (maxPlayers >= 1 && maxPlayers <= MINECRAFT_NET_MAX_PLAYERS)
+		{
+			launchConfig.maxPlayers = (unsigned char)maxPlayers;
+		}
+	}
+	if (HasCommandToken(cmdTokens, "-whitelist"))
+	{
+		launchConfig.whitelistEnabled = true;
+	}
+
+	strncpy_s(g_Win64MultiplayerIP, sizeof(g_Win64MultiplayerIP), launchConfig.bindAddress.c_str(), _TRUNCATE);
+	g_Win64MultiplayerPort = launchConfig.port;
+	g_Win64MultiplayerMaxPlayers = (int)launchConfig.maxPlayers;
+
+	if (launchConfig.dedicated)
+	{
+		g_dedicatedGuiEnabled = true;
+		g_dedicatedPort = launchConfig.port;
+		g_dedicatedMaxPlayers = (unsigned int)launchConfig.maxPlayers;
+		g_dedicatedWorldName = convStringToWstring(launchConfig.worldName);
+		g_dedicatedBindAddress = convStringToWstring(g_Win64MultiplayerIP);
+	}
+
+	StandaloneLog("Launch config: dedicated=%d, bind=%s, port=%d, maxPlayers=%u, flat=%d, disableSaving=%d, world=\"%s\"",
+		launchConfig.dedicated ? 1 : 0,
+		g_Win64MultiplayerIP,
+		launchConfig.port,
+		(unsigned int)launchConfig.maxPlayers,
+		launchConfig.flatWorld ? 1 : 0,
+		launchConfig.disableSaving ? 1 : 0,
+		launchConfig.worldName.c_str());
 
 	if (g_Win64Username[0] == 0)
 	{
+		if (!launchConfig.serverName.empty())
+		{
+			strncpy_s(g_Win64Username, 17, launchConfig.serverName.c_str(), _TRUNCATE);
+		}
+		else
+		{
 		DWORD sz = 17;
 		if (!GetUserNameA(g_Win64Username, &sz))
 			strncpy_s(g_Win64Username, 17, "Player", _TRUNCATE);
+		}
 		g_Win64Username[16] = 0;
 	}
 
@@ -846,18 +1996,31 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	MyRegisterClass(hInstance);
 
 	// Perform application initialization:
+	StandaloneLog("Calling InitInstance");
 	if (!InitInstance (hInstance, nCmdShow))
 	{
+		StandaloneLog("InitInstance failed");
 		return FALSE;
 	}
+	StandaloneLog("InitInstance succeeded");
 
 	hMyInst=hInstance;
 
+	if (launchConfig.dedicated)
+	{
+		SetWindowPos(g_hWnd, NULL, CW_USEDEFAULT, CW_USEDEFAULT, 900, 620, SWP_NOZORDER | SWP_NOMOVE);
+		DedicatedGuiCreateControls(g_hWnd);
+		StandaloneLog("Dedicated mode enabled (GUI active)");
+	}
+
+	StandaloneLog("Calling InitDevice");
 	if( FAILED( InitDevice() ) )
 	{
+		StandaloneLog("InitDevice failed");
 		CleanupDevice();
 		return 0;
 	}
+	StandaloneLog("InitDevice succeeded");
 
 #if 0
 	// Main message loop
@@ -911,12 +2074,17 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	}
 
 #endif
+	StandaloneLog("Calling app.loadMediaArchive");
 	app.loadMediaArchive();
+	StandaloneLog("Finished app.loadMediaArchive");
 
 	RenderManager.Initialise(g_pd3dDevice, g_pSwapChain);
 	
+	StandaloneLog("Calling app.loadStringTable");
 	app.loadStringTable();
+	StandaloneLog("Finished app.loadStringTable");
 	ui.init(g_pd3dDevice,g_pImmediateContext,g_pRenderTargetView,g_pDepthStencilView,g_iScreenWidth,g_iScreenHeight);
+	StandaloneLog("Finished ui.init");
 
 	////////////////
 	// Initialise //
@@ -1020,6 +2188,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	// XN_SYS_SIGNINCHANGED notifications. This does mean that we need to have a callback in the
 	// ProfileManager for XN_LIVE_INVITE_ACCEPTED for QNet.
 	g_NetworkManager.Initialise();
+	g_networkManagerReady = true;
 
 	for (int i = 0; i < MINECRAFT_NET_MAX_PLAYERS; i++)
 	{
@@ -1125,6 +2294,22 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	pMinecraft->options->set(Options::Option::MUSIC,1.0f);
 	pMinecraft->options->set(Options::Option::SOUND,1.0f);
 
+	if (launchConfig.dedicated)
+	{
+		pMinecraft->noRender = true;
+		pMinecraft->options->set(Options::Option::MUSIC, 0.0f);
+		pMinecraft->options->set(Options::Option::SOUND, 0.0f);
+
+		if (!StartDedicatedServer(launchConfig))
+		{
+			StandaloneLog("Dedicated startup failed");
+			g_NetworkManager.Terminate();
+			g_networkManagerReady = false;
+			CleanupDevice();
+			return -1;
+		}
+	}
+
 	//app.TemporaryCreateGameStart();
 
 	//Sleep(10000);
@@ -1162,6 +2347,20 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			if (msg.message == WM_QUIT) break;
 		}
 		if (msg.message == WM_QUIT) break;
+
+		if (launchConfig.dedicated)
+		{
+			app.UpdateTime();
+			StorageManager.Tick();
+			g_NetworkManager.DoWork();
+			if (app.GetGameStarted())
+			{
+				pMinecraft->tickAllConnections();
+			}
+			app.HandleXuiActions();
+			Sleep(10);
+			continue;
+		}
 
 		RenderManager.StartFrame();
 #if 0
@@ -1407,7 +2606,19 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 
 	// Free resources, unregister custom classes, and exit.
 	//	app.Uninit();
-	g_pd3dDevice->Release();
+	if (launchConfig.dedicated && g_NetworkManager.IsInSession())
+	{
+		g_NetworkManager.LeaveGame(false);
+	}
+	g_NetworkManager.Terminate();
+	g_networkManagerReady = false;
+
+	if (g_pd3dDevice)
+	{
+		g_pd3dDevice->Release();
+	}
+
+	return (int)msg.wParam;
 }
 
 #ifdef MEMORY_TRACKING

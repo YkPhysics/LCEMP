@@ -8,6 +8,7 @@ private:
 	enum EControls
 	{
 		eControl_PlayGame,
+		eControl_Minigames,
 		eControl_Leaderboards,
 		eControl_Achievements,
 		eControl_HelpAndOptions,
@@ -33,14 +34,15 @@ private:
 	UIControl m_controlTimer;
 	UI_BEGIN_MAP_ELEMENTS_AND_NAMES(UIScene)
 		UI_MAP_ELEMENT( m_buttons[(int)eControl_PlayGame], "Button1")
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_Leaderboards], "Button2")
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_Achievements], "Button3")
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_HelpAndOptions], "Button4")
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_UnlockOrDLC], "Button5")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_Minigames], "Button2")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_Leaderboards], "Button3")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_Achievements], "Button4")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_HelpAndOptions], "Button5")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_UnlockOrDLC], "Button6")
 #ifndef _DURANGO
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_Exit], "Button6")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_Exit], "Button7")
 #else
-		UI_MAP_ELEMENT( m_buttons[(int)eControl_XboxHelp], "Button6")
+		UI_MAP_ELEMENT( m_buttons[(int)eControl_XboxHelp], "Button7")
 #endif
 		UI_MAP_ELEMENT( m_controlTimer, "Timer")
 	UI_END_MAP_ELEMENTS_AND_NAMES()
@@ -76,6 +78,7 @@ private:
 	{
 		eAction_None=0,
 		eAction_RunGame,
+		eAction_RunMinigames,
 		eAction_RunLeaderboards,
 		eAction_RunAchievements,
 		eAction_RunHelpAndOptions,
@@ -127,6 +130,7 @@ protected:
 
 private:
 	void RunPlayGame(int iPad);
+	void RunMinigames(int iPad);
 	void RunLeaderboards(int iPad);
 	void RunUnlockOrDLC(int iPad);
 	void RunAchievements(int iPad);
@@ -141,6 +145,7 @@ private:
 #endif
 	static int CreateLoad_SignInReturned(void *pParam,bool bContinue, int iPad);
 	static int HelpAndOptions_SignInReturned(void *pParam,bool bContinue,int iPad);
+	static int Minigames_SignInReturned(void *pParam,bool bContinue,int iPad);
 	static int Achievements_SignInReturned(void *pParam,bool bContinue,int iPad);
 	static int MustSignInReturned(void *pParam,int iPad,C4JStorage::EMessageResult result);
 

@@ -97,6 +97,7 @@ public:
 	virtual bool startCrafting(int x, int y, int z);					// 4J added bool return
 	virtual bool startEnchanting(int x, int y, int z);					// 4J added bool return
 	virtual bool startRepairing(int x, int y, int z);					// 4J added bool return
+	virtual void openTextEdit(shared_ptr<SignTileEntity> sign);
     virtual bool openContainer(shared_ptr<Container> container);		// 4J added bool return
     virtual bool openFurnace(shared_ptr<FurnaceTileEntity> furnace);	// 4J added bool return
     virtual bool openTrap(shared_ptr<DispenserTileEntity> trap);		// 4J added bool return

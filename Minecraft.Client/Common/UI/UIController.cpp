@@ -10,7 +10,6 @@
 #include "..\..\..\Minecraft.World\net.minecraft.world.entity.boss.enderdragon.h"
 #ifdef _WINDOWS64
 #include "..\..\KeyboardMouseInput.h"
-#include "UIControl_Slider.h"
 #endif
 #include "..\..\EnderDragonRenderer.h"
 #include "..\..\MultiPlayerLocalPlayer.h"
@@ -690,100 +689,6 @@ void UIController::tickInput()
 		else
 #endif
 		{
-#ifdef _WINDOWS64
-			if (!g_KBMInput.IsMouseGrabbed())
-			{
-				UIScene *pScene = NULL;
-				for (int grp = 0; grp < eUIGroup_COUNT && !pScene; ++grp)
-				{
-					pScene = m_groups[grp]->GetTopScene(eUILayer_Debug);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Tooltips);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Error);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Alert);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Popup);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Fullscreen);
-					if (!pScene) pScene = m_groups[grp]->GetTopScene(eUILayer_Scene);
-				}
-				if (pScene && pScene->getMovie())
-				{
-					Iggy *movie = pScene->getMovie();
-					F32 mouseX = (F32)g_KBMInput.GetMouseX();
-					F32 mouseY = (F32)g_KBMInput.GetMouseY();
-					
-					extern HWND g_hWnd;
-					if (g_hWnd)
-					{
-						RECT rc;
-						GetClientRect(g_hWnd, &rc);
-						int winW = rc.right - rc.left;
-						int winH = rc.bottom - rc.top;
-						if (winW > 0 && winH > 0)
-						{
-							mouseX = mouseX * (m_fScreenWidth / (F32)winW);
-							mouseY = mouseY * (m_fScreenHeight / (F32)winH);
-						}
-					}
-
-					IggyFocusHandle currentFocus = IGGY_FOCUS_NULL;
-					IggyFocusableObject focusables[64];
-					S32 numFocusables = 0;
-					IggyPlayerGetFocusableObjects(movie, &currentFocus, focusables, 64, &numFocusables);
-
-					IggyFocusHandle hitObject = IGGY_FOCUS_NULL;
-					for (S32 i = 0; i < numFocusables; ++i)
-					{
-						if (mouseX >= focusables[i].x0 && mouseX <= focusables[i].x1 &&
-							mouseY >= focusables[i].y0 && mouseY <= focusables[i].y1)
-						{
-							hitObject = focusables[i].object;
-							break;
-						}
-					}
-
-					if (hitObject != IGGY_FOCUS_NULL && hitObject != currentFocus)
-					{
-						IggyPlayerSetFocusRS(movie, hitObject, 0);
-					}
-
-					if (g_KBMInput.IsMouseButtonDown(0) || g_KBMInput.IsMouseButtonPressed(0))
-					{
-						vector<UIControl *> *controls = pScene->GetControls();
-						if (controls)
-						{
-							for (size_t i = 0; i < controls->size(); i++)
-							{
-								UIControl *ctrl = (*controls)[i];
-								if (ctrl && ctrl->getControlType() == UIControl::eSlider && ctrl->getVisible())
-								{
-									S32 cx = ctrl->getXPos();
-									S32 cy = ctrl->getYPos();
-									S32 cw = ctrl->getWidth();
-									S32 ch = ctrl->getHeight();
-									
-									if (mouseX >= cx && mouseX <= cx + cw &&
-										mouseY >= cy && mouseY <= cy + ch)
-									{
-										UIControl_Slider *pSlider = (UIControl_Slider *)ctrl;
-										float fNewSliderPos = (mouseX - (float)cx) / (float)pSlider->GetRealWidth();
-										if (fNewSliderPos < 0.0f) fNewSliderPos = 0.0f;
-										if (fNewSliderPos > 1.0f) fNewSliderPos = 1.0f;
-										pSlider->SetSliderTouchPos(fNewSliderPos);
-										break;
-									}
-								}
-							}
-						}
-					}
-				}
-
-
-				int wheel = g_KBMInput.GetMouseWheel();
-				if (wheel > 0)
-					handleKeyPress(0, ACTION_MENU_UP);
-				else if (wheel < 0)
-					handleKeyPress(0, ACTION_MENU_DOWN);
-			}
-#endif
 			handleInput();
 			++m_accumulatedTicks;
 		}

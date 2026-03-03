@@ -95,9 +95,14 @@ UIBitmapFont::UIBitmapFont(	SFontData &sfontdata )
 	:	UIAbstractBitmapFont( sfontdata.m_strFontName )
 {
 	m_numGlyphs = sfontdata.m_uiGlyphCount;
+	m_cFontData = NULL;
 
 	BufferedImage bimg(sfontdata.m_wstrFilename);
 	int *bimgData = bimg.getData();
+	if (bimgData == NULL)
+	{
+		app.DebugPrintf("UIBitmapFont: missing texture data for '%s'\n", sfontdata.m_strFontName.c_str());
+	}
 	
 	m_cFontData = new CFontData(sfontdata, bimgData);
 	
@@ -106,12 +111,27 @@ UIBitmapFont::UIBitmapFont(	SFontData &sfontdata )
 
 UIBitmapFont::~UIBitmapFont()
 {
-	m_cFontData->release();
+	if (m_cFontData)
+	{
+		m_cFontData->release();
+		delete m_cFontData;
+		m_cFontData = NULL;
+	}
 }
 
 //Callback function type for returning vertical font metrics
 IggyFontMetrics *UIBitmapFont::GetFontMetrics(IggyFontMetrics *metrics)
 {
+	if (metrics == NULL)
+	{
+		return NULL;
+	}
+	if (m_cFontData == NULL || m_cFontData->getFontData() == NULL)
+	{
+		memset(metrics, 0, sizeof(*metrics));
+		return metrics;
+	}
+
 	//Description
 	// Vertical metrics for a font 
 	//Members
@@ -138,6 +158,11 @@ IggyFontMetrics *UIBitmapFont::GetFontMetrics(IggyFontMetrics *metrics)
 //Callback function type for mapping 32-bit unicode code point to internal font glyph number; use IGGY_GLYPH_INVALID to mean "invalid character"
 S32 UIBitmapFont::GetCodepointGlyph(U32 codepoint)
 {
+	if (m_cFontData == NULL)
+	{
+		return 0;
+	}
+
 	// 4J-JEV: Change "right single quotation marks" to apostrophies.
 	if (codepoint == 0x2019) codepoint = 0x27;
 
@@ -147,6 +172,16 @@ S32 UIBitmapFont::GetCodepointGlyph(U32 codepoint)
 //Callback function type for returning horizontal metrics for each glyph 
 IggyGlyphMetrics * UIBitmapFont::GetGlyphMetrics(S32 glyph,IggyGlyphMetrics *metrics)
 {
+	if (metrics == NULL)
+	{
+		return NULL;
+	}
+	if (m_cFontData == NULL || m_cFontData->getFontData() == NULL)
+	{
+		memset(metrics, 0, sizeof(*metrics));
+		return metrics;
+	}
+
 	// 4J-JEV: Information about 'Glyph Metrics'.
 	// http://freetype.sourceforge.net/freetype2/docs/glyphs/glyphs-3.html - Overview.
 	// http://en.wikipedia.org/wiki/Kerning#Kerning_values - 'Font Units'
@@ -196,6 +231,10 @@ IggyGlyphMetrics * UIBitmapFont::GetGlyphMetrics(S32 glyph,IggyGlyphMetrics *met
 //Callback function type that should return true iff the glyph has no visible elements
 rrbool UIBitmapFont::IsGlyphEmpty (S32 glyph)
 {
+	if (m_cFontData == NULL)
+	{
+		return true;
+	}
 	if (m_cFontData->glyphIsWhitespace(glyph))	return true;
 	return false;//app.DebugPrintf("Is glyph %d empty? %s\n",glyph,isEmpty?"TRUE":"FALSE");
 }
@@ -214,6 +253,10 @@ F32 UIBitmapFont::GetKerningForGlyphPair(S32 first_glyph,S32 second_glyph)
 //Callback function type used for reporting whether a bitmap supports a given glyph at the given scale
 rrbool UIBitmapFont::CanProvideBitmap(S32 glyph,F32 pixel_scale)
 {
+	if (m_cFontData == NULL || m_cFontData->getFontData() == NULL)
+	{
+		return false;
+	}
 	//app.DebugPrintf("Can provide bitmap for glyph %d at scale %f? %s\n",glyph,pixel_scale,canProvideBitmap?"TRUE":"FALSE");
 	return true;
 }
@@ -226,6 +269,16 @@ rrbool UIBitmapFont::CanProvideBitmap(S32 glyph,F32 pixel_scale)
 //	bitmap  The structure to store the bitmap into  
 rrbool UIBitmapFont::GetGlyphBitmap(S32 glyph,F32 pixel_scale,IggyBitmapCharacter *bitmap)
 {
+	if (bitmap == NULL)
+	{
+		return false;
+	}
+	if (m_cFontData == NULL || m_cFontData->getFontData() == NULL)
+	{
+		memset(bitmap, 0, sizeof(*bitmap));
+		return false;
+	}
+
 	//Description
 	// Data structure used to return to Iggy the bitmap to use for a glyph 
 	//Members

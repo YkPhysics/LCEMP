@@ -111,6 +111,9 @@ public:
 private:
 	// 4J Added
 	//int m_lastSentDifficulty;
+	float m_recentTps;
+	__int64 m_lastTpsSampleMs;
+	int m_lastTpsSampleTick;
 
 public:
 	// 4J Stu - This value should be incremented every time the list of players with friends-only UGC settings changes
@@ -236,6 +239,7 @@ public:
 	//static int getSlowQueueIndex() { return s_slowQueuePlayerIndex; }
 	static bool canSendOnSlowQueue(INetworkPlayer *player);
 	static void cycleSlowQueueIndex();
+	float getRecentTps() const { return m_recentTps; }
 
 	void setSaveOnExit(bool save) { m_saveOnExit = save; s_bSaveOnExitAnswered = true; }
 	void Suspend();

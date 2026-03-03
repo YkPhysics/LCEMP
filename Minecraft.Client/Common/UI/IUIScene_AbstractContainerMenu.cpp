@@ -15,9 +15,6 @@
 
 #ifdef _WINDOWS64
 #include "..\..\KeyboardMouseInput.h"
-#include "UI.h"
-
-SavedInventoryCursorPos g_savedInventoryCursorPos = { 0.0f, 0.0f, false };
 #endif
 
 IUIScene_AbstractContainerMenu::IUIScene_AbstractContainerMenu()
@@ -473,26 +470,20 @@ void IUIScene_AbstractContainerMenu::onMouseTick()
 #ifdef _WINDOWS64
 	if (!g_KBMInput.IsMouseGrabbed())
 	{
-		int deltaX = g_KBMInput.GetMouseDeltaX();
-		int deltaY = g_KBMInput.GetMouseDeltaY();
-
-		extern HWND g_hWnd;
-		RECT rc;
-		GetClientRect(g_hWnd, &rc);
-		int winW = rc.right - rc.left;
-		int winH = rc.bottom - rc.top;
-
-		if (winW > 0 && winH > 0)
+		int dx = g_KBMInput.GetMouseDeltaX();
+		int dy = g_KBMInput.GetMouseDeltaY();
+		if (dx != 0 || dy != 0)
 		{
-			float scaleX = (float)getMovieWidth() / (float)winW;
-			float scaleY = (float)getMovieHeight() / (float)winH;
+			float sensitivity = (float)app.GetGameSettings(iPad, eGameSetting_Sensitivity_InMenu) / 100.0f;
+			float mouseScale = sensitivity * 1.0f;
+			vPointerPos.x += (float)dx * mouseScale;
+			vPointerPos.y += (float)dy * mouseScale;
+			
+			if (vPointerPos.x < m_fPointerMinX) vPointerPos.x = m_fPointerMinX;
+			else if (vPointerPos.x > m_fPointerMaxX) vPointerPos.x = m_fPointerMaxX;
+			if (vPointerPos.y < m_fPointerMinY) vPointerPos.y = m_fPointerMinY;
+			else if (vPointerPos.y > m_fPointerMaxY) vPointerPos.y = m_fPointerMaxY;
 
-			vPointerPos.x += (float)deltaX * scaleX;
-			vPointerPos.y += (float)deltaY * scaleY;
-		}
-
-		if (deltaX != 0 || deltaY != 0)
-		{
 			bStickInput = true;
 		}
 	}
@@ -715,11 +706,7 @@ void IUIScene_AbstractContainerMenu::onMouseTick()
 
 			// If there is no stick input, and we are over a slot, then snap pointer to slot centre.
 			// 4J - TomK - only if this particular component allows so!
-#ifdef _WINDOWS64
-			if(g_KBMInput.IsMouseGrabbed() && CanHaveFocus(eSectionUnderPointer))
-#else
 			if(CanHaveFocus(eSectionUnderPointer))
-#endif
 			{
 				vPointerPos.x = vSnapPos.x;
 				vPointerPos.y = vSnapPos.y;
@@ -727,8 +714,7 @@ void IUIScene_AbstractContainerMenu::onMouseTick()
 		}
 	}
 
-
-	// Clamp to pointer extents
+	// Clamp to pointer extents.
 	if ( vPointerPos.x < m_fPointerMinX )				vPointerPos.x = m_fPointerMinX;
 	else if ( vPointerPos.x > m_fPointerMaxX )		vPointerPos.x = m_fPointerMaxX;
 	if ( vPointerPos.y < m_fPointerMinY )				vPointerPos.y = m_fPointerMinY;
@@ -1250,15 +1236,8 @@ void IUIScene_AbstractContainerMenu::onMouseTick()
 
 
 	// Offset back to image top left.
-#ifdef _WINDOWS64
-	if (g_KBMInput.IsMouseGrabbed())
-	{
-#endif
-		vPointerPos.x -= m_fPointerImageOffsetX;
-		vPointerPos.y -= m_fPointerImageOffsetY;
-#ifdef _WINDOWS64
-	}
-#endif
+	vPointerPos.x -= m_fPointerImageOffsetX;
+	vPointerPos.y -= m_fPointerImageOffsetY;
 
 	// Update pointer position.
 	// 4J-PB - do not allow sub pixel positions or we get broken lines in box edges

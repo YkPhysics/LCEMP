@@ -69,6 +69,62 @@
 
 #include "..\Common\Leaderboards\LeaderboardManager.h"
 
+#ifdef _WINDOWS64
+extern void Windows64_DedicatedGuiPushLog(const char *text);
+
+static void WriteStandaloneDebugLog(const char *text)
+{
+	if (text == NULL)
+	{
+		return;
+	}
+
+	wchar_t exePath[MAX_PATH];
+	if (!GetModuleFileNameW(NULL, exePath, MAX_PATH))
+	{
+		return;
+	}
+
+	wstring logPath(exePath);
+	size_t lastSlash = logPath.find_last_of(L"\\/");
+	if (lastSlash != wstring::npos)
+	{
+		logPath = logPath.substr(0, lastSlash + 1) + L"StandaloneDebug.log";
+	}
+	else
+	{
+		logPath = L"StandaloneDebug.log";
+	}
+
+	HANDLE file = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+	{
+		return;
+	}
+
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+
+	char prefix[64];
+	_snprintf_s(prefix, sizeof(prefix), _TRUNCATE, "[%02d:%02d:%02d.%03d] ",
+		st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+
+	DWORD bytesWritten = 0;
+	WriteFile(file, prefix, (DWORD)strlen(prefix), &bytesWritten, NULL);
+	WriteFile(file, text, (DWORD)strlen(text), &bytesWritten, NULL);
+
+	size_t len = strlen(text);
+	if (len == 0 || (text[len - 1] != '\n' && text[len - 1] != '\r'))
+	{
+		const char *newline = "\r\n";
+		WriteFile(file, newline, (DWORD)strlen(newline), &bytesWritten, NULL);
+	}
+
+	CloseHandle(file);
+	Windows64_DedicatedGuiPushLog(text);
+}
+#endif
+
 //CMinecraftApp app;
 unsigned int CMinecraftApp::m_uiLastSignInData = 0;
 
@@ -233,21 +289,23 @@ CMinecraftApp::CMinecraftApp()
 
 void CMinecraftApp::DebugPrintf(const char *szFormat, ...)
 {
-
-#ifndef _FINAL_BUILD
 	char    buf[1024];
 	va_list ap;
 	va_start(ap, szFormat);
 	vsnprintf(buf, sizeof(buf), szFormat, ap);
 	va_end(ap);
+
+#ifndef _FINAL_BUILD
 	OutputDebugStringA(buf);
 #endif
 
+#ifdef _WINDOWS64
+	WriteStandaloneDebugLog(buf);
+#endif
 }
 
 void CMinecraftApp::DebugPrintf(int user, const char *szFormat, ...)
 {
-#ifndef _FINAL_BUILD
 	if(user == USER_NONE)
 		return;
 	char    buf[1024];
@@ -255,6 +313,7 @@ void CMinecraftApp::DebugPrintf(int user, const char *szFormat, ...)
 	va_start(ap, szFormat);
 	vsnprintf(buf, sizeof(buf), szFormat, ap);
 	va_end(ap);
+#ifndef _FINAL_BUILD
 #ifdef __PS3__
 	unsigned int writelen;
 	sys_tty_write(SYS_TTYP_USER1 + ( user - 1 ), buf, strlen(buf), &writelen );
@@ -297,12 +356,26 @@ void CMinecraftApp::DebugPrintf(int user, const char *szFormat, ...)
 	}
 #endif
 #endif
+
+#ifdef _WINDOWS64
+	WriteStandaloneDebugLog(buf);
+#endif
 }
 
 LPCWSTR CMinecraftApp::GetString(int iID)
 {
 	//return L"Değişiklikler ve Yenilikler";
 	//return L"ÕÕÕÕÖÖÖÖ";
+	if (app.m_stringTable == NULL)
+	{
+		static int s_missingStringTableLogCount = 0;
+		if (s_missingStringTableLogCount < 16)
+		{
+			app.DebugPrintf("CMinecraftApp::GetString - null m_stringTable for id %d\n", iID);
+			s_missingStringTableLogCount++;
+		}
+		return L"";
+	}
 	return app.m_stringTable->getString(iID);
 }
 
@@ -4085,23 +4158,65 @@ int CMinecraftApp::BannedLevelDialogReturned(void *pParam,int iPad,const C4JStor
 
 void CMinecraftApp::loadMediaArchive()
 {
-	wstring mediapath = L"";
+	wstring mediaFileName = L"";
 
 #ifdef __PS3__
-	mediapath = L"Common\\Media\\MediaPS3.arc";
+	mediaFileName = L"MediaPS3.arc";
 #elif _WINDOWS64
-	mediapath = L"Common\\Media\\MediaWindows64.arc";
+	mediaFileName = L"MediaWindows64.arc";
 #elif __ORBIS__
-	mediapath = L"Common\\Media\\MediaOrbis.arc";
+	mediaFileName = L"MediaOrbis.arc";
 #elif _DURANGO
-	mediapath = L"Common\\Media\\MediaDurango.arc";
+	mediaFileName = L"MediaDurango.arc";
 #elif __PSVITA__
-	mediapath = L"Common\\Media\\MediaPSVita.arc";
+	mediaFileName = L"MediaPSVita.arc";
 #endif
 
-	if (!mediapath.empty()) 
+	if (!mediaFileName.empty()) 
 	{
-		m_mediaArchive = new ArchiveFile( File(mediapath) );
+		if (m_mediaArchive != NULL)
+		{
+			delete m_mediaArchive;
+			m_mediaArchive = NULL;
+		}
+
+		vector<wstring> candidates;
+		candidates.push_back(L"Common\\Media\\" + mediaFileName);
+		candidates.push_back(L"Minecraft.Client\\Common\\Media\\" + mediaFileName);
+
+#if defined(_WINDOWS64) || defined(_WIN32)
+		wchar_t exePath[MAX_PATH];
+		if (GetModuleFileNameW(NULL, exePath, MAX_PATH))
+		{
+			wstring exeDir(exePath);
+			size_t lastSlash = exeDir.find_last_of(L"\\/");
+			if (lastSlash != wstring::npos)
+			{
+				exeDir = exeDir.substr(0, lastSlash);
+				wstring root = exeDir;
+				for (int i = 0; i < 8; ++i)
+				{
+					candidates.push_back(root + L"\\Common\\Media\\" + mediaFileName);
+					candidates.push_back(root + L"\\Minecraft.Client\\Common\\Media\\" + mediaFileName);
+					root += L"\\..";
+				}
+			}
+		}
+#endif
+
+		for (AUTO_VAR(it, candidates.begin()); it != candidates.end(); ++it)
+		{
+			File archiveCandidate(*it);
+			if (archiveCandidate.exists())
+			{
+				app.DebugPrintf("CMinecraftApp::loadMediaArchive - using '%ls'\n", it->c_str());
+				m_mediaArchive = new ArchiveFile(archiveCandidate);
+				return;
+			}
+		}
+
+		app.DebugPrintf("CMinecraftApp::loadMediaArchive - failed to locate '%ls'\n", mediaFileName.c_str());
+		m_mediaArchive = NULL;
 	}
 #if 0
 	string path = "Common\\media.arc";
@@ -4153,6 +4268,18 @@ void CMinecraftApp::loadStringTable()
 		// we need to unload the current string table, this is a reload
 		delete m_stringTable;
 	}
+	m_stringTable = NULL;
+
+	if (m_mediaArchive == NULL)
+	{
+		loadMediaArchive();
+		if (m_mediaArchive == NULL)
+		{
+		DebugPrintf("CMinecraftApp::loadStringTable - media archive not loaded\n");
+		return;
+		}
+	}
+
 	wstring localisationFile = L"languages.loc";
 	if (m_mediaArchive->hasFile(localisationFile))
 	{
@@ -4162,9 +4289,7 @@ void CMinecraftApp::loadStringTable()
 	}
 	else
 	{
-		m_stringTable = NULL;
-		assert(false);
-		// AHHHHHHHHH.
+		DebugPrintf("CMinecraftApp::loadStringTable - missing file '%ls'\n", localisationFile.c_str());
 	}
 #endif
 }
@@ -8864,7 +8989,17 @@ int CMinecraftApp::getArchiveFileSize(const wstring &filename)
 	{
 		return tPack->getArchiveFile()->getFileSize(filename);
 	}
-	else return m_mediaArchive->getFileSize(filename);
+
+	if (m_mediaArchive == NULL)
+	{
+		loadMediaArchive();
+	}
+	if (m_mediaArchive != NULL)
+	{
+		return m_mediaArchive->getFileSize(filename);
+	}
+
+	return -1;
 }
 
 bool CMinecraftApp::hasArchiveFile(const wstring &filename)
@@ -8873,7 +9008,12 @@ bool CMinecraftApp::hasArchiveFile(const wstring &filename)
 	Minecraft *pMinecraft = Minecraft::GetInstance();
 	if(pMinecraft && pMinecraft->skins) tPack = pMinecraft->skins->getSelected();
 	if(tPack && tPack->hasData() && tPack->getArchiveFile() && tPack->getArchiveFile()->hasFile(filename)) return true;
-	else return m_mediaArchive->hasFile(filename);
+
+	if (m_mediaArchive == NULL)
+	{
+		loadMediaArchive();
+	}
+	return m_mediaArchive != NULL && m_mediaArchive->hasFile(filename);
 }
 
 byteArray CMinecraftApp::getArchiveFile(const wstring &filename)
@@ -8885,7 +9025,17 @@ byteArray CMinecraftApp::getArchiveFile(const wstring &filename)
 	{
 		return tPack->getArchiveFile()->getFile(filename);
 	}
-	else return m_mediaArchive->getFile(filename);
+
+	if (m_mediaArchive == NULL)
+	{
+		loadMediaArchive();
+	}
+	if (m_mediaArchive != NULL)
+	{
+		return m_mediaArchive->getFile(filename);
+	}
+
+	return byteArray();
 }
 
 // DLC

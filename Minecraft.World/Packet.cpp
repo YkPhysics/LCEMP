@@ -421,26 +421,29 @@ void Packet::writeUtf(const wstring& value, DataOutputStream *dos) // throws IOE
 
 wstring Packet::readUtf(DataInputStream *dis, int maxLength) // throws IOException TODO 4J JEV, should this declare a throws?
 {
-
 	short stringLength = dis->readShort();
-	if (stringLength > maxLength)
-	{
-		wstringstream stream;
-		stream << L"Received string length longer than maximum allowed (" << stringLength << " > " << maxLength << ")";
-		assert(false);
-		//        throw new IOException( stream.str() );
-	}
 	if (stringLength < 0)
 	{
-		assert(false);
-		//        throw new IOException(L"Received string length is less than zero! Weird string!");
+		app.DebugPrintf("Packet::readUtf - invalid negative length %d (max=%d)\n", (int)stringLength, maxLength);
+		return L"";
+	}
+
+	const int sourceLength = (int)stringLength;
+	const int safeLength = sourceLength > maxLength ? maxLength : sourceLength;
+	if (sourceLength > maxLength)
+	{
+		app.DebugPrintf("Packet::readUtf - clamping overlong string (%d > %d)\n", sourceLength, maxLength);
 	}
 
 	wstring builder = L"";
-	for (int i = 0; i < stringLength; i++) 
+	builder.reserve(safeLength);
+	for (int i = 0; i < sourceLength; i++) 
 	{
 		wchar_t rc = dis->readChar();
-		builder.push_back( rc );
+		if (i < safeLength)
+		{
+			builder.push_back(rc);
+		}
 	}
 
 	return builder;

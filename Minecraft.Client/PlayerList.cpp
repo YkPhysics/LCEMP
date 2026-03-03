@@ -24,6 +24,9 @@
 #include "..\Minecraft.World\net.minecraft.world.level.storage.h"
 #include "..\Minecraft.World\net.minecraft.world.level.saveddata.h"
 #include "..\Minecraft.World\JavaMath.h"
+#include <fstream>
+#include <algorithm>
+#include <cwctype>
 #if defined(_XBOX) || defined(_WINDOWS64)
 #include "Xbox\Network\NetworkPlayerXbox.h"
 #elif defined(__PS3__) || defined(__ORBIS__)
@@ -31,6 +34,68 @@
 #endif
 
 // 4J - this class is fairly substantially altered as there didn't seem any point in porting code for banning, whitelisting, ops etc.
+namespace
+{
+	static const wchar_t *kWhitelistFile = L"whitelist.txt";
+	static const wchar_t *kOpsFile = L"ops.txt";
+	static const wchar_t *kBansFile = L"banned-players.txt";
+
+	static wstring NormalizePlayerName(const wstring &name)
+	{
+		wstring out = name;
+		std::transform(out.begin(), out.end(), out.begin(), [](wchar_t c) { return (wchar_t)std::towlower(c); });
+		return out;
+	}
+
+	static void LoadNameSetFromFile(const wchar_t *fileName, set<wstring> &outSet)
+	{
+		outSet.clear();
+		std::wifstream in(fileName);
+		if (!in.good())
+		{
+			return;
+		}
+
+		wstring line;
+		while (std::getline(in, line))
+		{
+			// Strip comments.
+			size_t hashPos = line.find(L'#');
+			if (hashPos != wstring::npos)
+			{
+				line = line.substr(0, hashPos);
+			}
+
+			while (!line.empty() && iswspace(line.front()))
+			{
+				line.erase(line.begin());
+			}
+			while (!line.empty() && iswspace(line.back()))
+			{
+				line.pop_back();
+			}
+
+			if (!line.empty())
+			{
+				outSet.insert(NormalizePlayerName(line));
+			}
+		}
+	}
+
+	static void SaveNameSetToFile(const wchar_t *fileName, const set<wstring> &values)
+	{
+		std::wofstream out(fileName, std::ios::out | std::ios::trunc);
+		if (!out.good())
+		{
+			return;
+		}
+
+		for (AUTO_VAR(it, values.begin()); it != values.end(); ++it)
+		{
+			out << *it << L"\n";
+		}
+	}
+}
 
 PlayerList::PlayerList(MinecraftServer *server)
 {
@@ -58,6 +123,10 @@ PlayerList::PlayerList(MinecraftServer *server)
     maxPlayers = server->settings->getInt(L"max-players", 20);
 #endif
     doWhiteList = false;
+
+	reloadWhitelist();
+	reloadOps();
+	reloadBans();
 	
 	InitializeCriticalSection(&m_kickPlayersCS);
 	InitializeCriticalSection(&m_closePlayersCS);
@@ -88,6 +157,12 @@ void PlayerList::placeNewPlayer(Connection *connection, shared_ptr<ServerPlayer>
 		{
 			player->enableAllPlayerPrivileges(true);			
 			player->setPlayerGamePrivilege(Player::ePlayerGamePrivilege_HOST,1);
+		}
+
+		// Apply persisted operator status on join (dedicated and local-host modes).
+		if (isOp(player->name))
+		{
+			player->setPlayerGamePrivilege(Player::ePlayerGamePrivilege_Op, 1);
 		}
 
 #if defined(__PS3__) || defined(__ORBIS__)
@@ -467,8 +542,64 @@ shared_ptr<ServerPlayer> PlayerList::getPlayerForLogin(PendingConnection *pendin
         return shared_ptr<ServerPlayer>();
     }
 #endif
+
+	if (isNameBanned(userName))
+	{
+		pendingConnection->disconnect(DisconnectPacket::eDisconnect_Banned);
+		return shared_ptr<ServerPlayer>();
+	}
+
+	if (doWhiteList)
+	{
+		INetworkPlayer *joiningNetworkPlayer = NULL;
+		if (pendingConnection != NULL && pendingConnection->connection != NULL && pendingConnection->connection->getSocket() != NULL)
+		{
+			joiningNetworkPlayer = pendingConnection->connection->getSocket()->getPlayer();
+		}
+
+		if (joiningNetworkPlayer == NULL || !joiningNetworkPlayer->IsHost())
+		{
+			if (!isWhiteListed(userName))
+			{
+				app.DebugPrintf("PlayerList::getPlayerForLogin - rejecting non-whitelisted player %ls\n", userName.c_str());
+				pendingConnection->disconnect(DisconnectPacket::eDisconnect_Kicked);
+				return shared_ptr<ServerPlayer>();
+			}
+		}
+	}
 	
-	shared_ptr<ServerPlayer> player = shared_ptr<ServerPlayer>(new ServerPlayer(server, server->getLevel(0), userName, new ServerPlayerGameMode(server->getLevel(0)) ));
+	wstring resolvedName = userName;
+#ifdef _WINDOWS64
+	// Win64 testing often has multiple clients with the same OS username.
+	// Keep server-side player names unique to avoid legacy name-based collisions.
+	if (!resolvedName.empty())
+	{
+		const wstring baseName = resolvedName;
+		int suffix = 2;
+		bool unique = false;
+		while (!unique)
+		{
+			unique = true;
+			for (AUTO_VAR(it, players.begin()); it != players.end(); ++it)
+			{
+				shared_ptr<ServerPlayer> existing = *it;
+				if (existing != NULL && existing->name == resolvedName)
+				{
+					const int currentSuffix = suffix++;
+					wstring trimmedBase = baseName;
+					if (trimmedBase.length() > 56)
+					{
+						trimmedBase = trimmedBase.substr(0, 56);
+					}
+					resolvedName = trimmedBase + L"_" + to_wstring(currentSuffix);
+					unique = false;
+					break;
+				}
+			}
+		}
+	}
+#endif
+	shared_ptr<ServerPlayer> player = shared_ptr<ServerPlayer>(new ServerPlayer(server, server->getLevel(0), resolvedName, new ServerPlayerGameMode(server->getLevel(0)) ));
 	player->gameMode->player = player; // 4J added as had to remove this assignment from ServerPlayer ctor
 	player->setXuid( xuid ); // 4J Added
 	player->setOnlineXuid( onlineXuid ); // 4J Added
@@ -930,7 +1061,14 @@ void PlayerList::tick()
 
 				if (player != NULL)
 				{
+#ifdef _WINDOWS64
+					// Keep kicks session-scoped on Windows64. The stub identity maps to slot ids, so
+					// persisting bans can incorrectly block later joiners that reuse a slot.
+					app.DebugPrintf("PlayerList::tick - kicking smallId=%u (no persistent ban on Windows64)\n",
+						(unsigned int)smallId);
+#else
 					m_bannedXuids.push_back( player->getOnlineXuid() );
+#endif
 					// 4J Stu - If we have kicked a player, make sure that they have no privileges if they later try to join the world when trust players is off
 					player->enableAllPlayerPrivileges( false );
 					player->connection->setWasKicked();
@@ -1003,12 +1141,16 @@ wstring PlayerList::getPlayerNames()
 
 bool PlayerList::isWhiteListed(const wstring& name)
 {
-	return true;
+	if (!doWhiteList)
+	{
+		return true;
+	}
+	return (m_whitelistNames.find(NormalizePlayerName(name)) != m_whitelistNames.end());
 }
 
 bool PlayerList::isOp(const wstring& name)
 {
-	return false;
+	return (m_operatorNames.find(NormalizePlayerName(name)) != m_operatorNames.end());
 }
 
 bool PlayerList::isOp(shared_ptr<ServerPlayer> player)
@@ -1177,14 +1319,90 @@ void PlayerList::saveAll(ProgressListener *progressListener, bool bDeleteGuestMa
 
 void PlayerList::whiteList(const wstring& playerName)
 {
+	m_whitelistNames.insert(NormalizePlayerName(playerName));
+	SaveNameSetToFile(kWhitelistFile, m_whitelistNames);
 }
 
 void PlayerList::blackList(const wstring& playerName)
 {
+	m_whitelistNames.erase(NormalizePlayerName(playerName));
+	SaveNameSetToFile(kWhitelistFile, m_whitelistNames);
 }
 
 void PlayerList::reloadWhitelist()
 {
+	LoadNameSetFromFile(kWhitelistFile, m_whitelistNames);
+}
+
+void PlayerList::setWhitelistEnabled(bool enabled)
+{
+	doWhiteList = enabled;
+}
+
+bool PlayerList::isWhitelistEnabled() const
+{
+	return doWhiteList;
+}
+
+bool PlayerList::addOp(const wstring &playerName)
+{
+	const size_t oldSize = m_operatorNames.size();
+	m_operatorNames.insert(NormalizePlayerName(playerName));
+	if (m_operatorNames.size() != oldSize)
+	{
+		SaveNameSetToFile(kOpsFile, m_operatorNames);
+		return true;
+	}
+	return false;
+}
+
+bool PlayerList::removeOp(const wstring &playerName)
+{
+	const size_t erased = m_operatorNames.erase(NormalizePlayerName(playerName));
+	if (erased != 0)
+	{
+		SaveNameSetToFile(kOpsFile, m_operatorNames);
+		return true;
+	}
+	return false;
+}
+
+void PlayerList::reloadOps()
+{
+	LoadNameSetFromFile(kOpsFile, m_operatorNames);
+}
+
+bool PlayerList::banName(const wstring &playerName)
+{
+	const size_t oldSize = m_bannedNames.size();
+	m_bannedNames.insert(NormalizePlayerName(playerName));
+	if (m_bannedNames.size() != oldSize)
+	{
+		SaveNameSetToFile(kBansFile, m_bannedNames);
+		return true;
+	}
+	return false;
+}
+
+bool PlayerList::unbanName(const wstring &playerName)
+{
+	const size_t erased = m_bannedNames.erase(NormalizePlayerName(playerName));
+	if (erased != 0)
+	{
+		SaveNameSetToFile(kBansFile, m_bannedNames);
+		return true;
+	}
+	return false;
+}
+
+void PlayerList::reloadBans()
+{
+	LoadNameSetFromFile(kBansFile, m_bannedNames);
+}
+
+bool PlayerList::isNameBanned(const wstring &name) const
+{
+	return (m_bannedNames.find(NormalizePlayerName(name)) != m_bannedNames.end());
 }
 
 void PlayerList::sendLevelInfo(shared_ptr<ServerPlayer> player, ServerLevel *level)

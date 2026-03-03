@@ -216,6 +216,19 @@ typedef struct _SaveListDetails
 
 } SaveListDetails;
 
+#define LOAD_OR_JOIN_MENU_INIT_MAGIC 0x4C4F4A4D
+typedef struct _LoadOrJoinMenuInitData
+{
+	DWORD magic;
+	BOOL bMinigamesMode;
+
+	_LoadOrJoinMenuInitData()
+	{
+		magic = LOAD_OR_JOIN_MENU_INIT_MAGIC;
+		bMinigamesMode = FALSE;
+	}
+} LoadOrJoinMenuInitData;
+
 // Load world
 typedef struct _LoadMenuInitData
 {

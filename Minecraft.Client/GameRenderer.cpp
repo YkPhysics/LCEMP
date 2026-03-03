@@ -48,6 +48,9 @@
 
 #include "TexturePackRepository.h"
 #include "TexturePack.h"
+#ifdef _WINDOWS64
+#include "Common\Network\PlatformNetworkManagerStub.h"
+#endif
 
 bool GameRenderer::anaglyph3d = false;
 int GameRenderer::anaglyphPass = 0;
@@ -1163,6 +1166,26 @@ int GameRenderer::runUpdate(LPVOID lpParam)
 		}
 
 		m_updateEvents->Set(eUpdateCanRun);
+
+#ifdef _WINDOWS64
+		// Cross-server transfer can overlap old-level teardown and new-level connect.
+		// Do not touch chunk rebuild queues in this transition window.
+		if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+		{
+			RenderManager.CBuffDeferredModeEnd();
+			m_updateEvents->Set(eUpdateEventIsFinished);
+			Sleep(1);
+			continue;
+		}
+#endif
+
+		if (minecraft == NULL || minecraft->levelRenderer == NULL || minecraft->level == NULL)
+		{
+			RenderManager.CBuffDeferredModeEnd();
+			m_updateEvents->Set(eUpdateEventIsFinished);
+			Sleep(1);
+			continue;
+		}
 
 //		PIXBeginNamedEvent(0,"Updating dirty chunks %d",(count++)&7);
 

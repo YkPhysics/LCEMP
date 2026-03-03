@@ -4,11 +4,12 @@
 #include "XUI_CustomMessages.h"
 
 #define BUTTON_PLAYGAME			0
-#define BUTTON_LEADERBOARDS		1
-#define BUTTON_ACHIEVEMENTS		2
-#define BUTTON_HELPANDOPTIONS	3
-#define BUTTON_UNLOCKFULLGAME	4
-#define	BUTTON_EXITGAME			5
+#define BUTTON_MINIGAMES		1
+#define BUTTON_LEADERBOARDS		2
+#define BUTTON_ACHIEVEMENTS		3
+#define BUTTON_HELPANDOPTIONS	4
+#define BUTTON_UNLOCKFULLGAME	5
+#define	BUTTON_EXITGAME			6
 #define BUTTONS_MAX				BUTTON_EXITGAME + 1
 
 #define MAIN_MENU_MAX_TEXT_SCALE 1.5f
@@ -41,6 +42,7 @@ private:
 	{
 		eAction_None=0,
 		eAction_RunGame,
+		eAction_RunMinigames,
 		eAction_RunLeaderboards,
 		eAction_RunAchievements,
 		eAction_RunHelpAndOptions,
@@ -70,11 +72,12 @@ protected:
 		   // Control mapping to objects
 	BEGIN_CONTROL_MAP()
 		MAP_CONTROL(IDC_XuiButton1, m_Buttons[BUTTON_PLAYGAME])
-		MAP_CONTROL(IDC_XuiButton2, m_Buttons[BUTTON_LEADERBOARDS  ])
-		MAP_CONTROL(IDC_XuiButton3, m_Buttons[BUTTON_ACHIEVEMENTS  ])
-		MAP_CONTROL(IDC_XuiButton4, m_Buttons[BUTTON_HELPANDOPTIONS])
-		MAP_CONTROL(IDC_XuiButton5, m_Buttons[BUTTON_UNLOCKFULLGAME])
-		MAP_CONTROL(IDC_XuiButton6, m_Buttons[BUTTON_EXITGAME])
+		MAP_CONTROL(IDC_XuiButton2, m_Buttons[BUTTON_MINIGAMES])
+		MAP_CONTROL(IDC_XuiButton3, m_Buttons[BUTTON_LEADERBOARDS  ])
+		MAP_CONTROL(IDC_XuiButton4, m_Buttons[BUTTON_ACHIEVEMENTS  ])
+		MAP_CONTROL(IDC_XuiButton5, m_Buttons[BUTTON_HELPANDOPTIONS])
+		MAP_CONTROL(IDC_XuiButton6, m_Buttons[BUTTON_UNLOCKFULLGAME])
+		MAP_CONTROL(IDC_XuiButton7, m_Buttons[BUTTON_EXITGAME])
 		MAP_CONTROL(IDC_XuiSplash, m_Subtitle)
 		MAP_CONTROL(IDC_XuiSplashMCFont, m_SubtitleMCFont)
 		MAP_CONTROL(IDC_Timer, m_Timer)
@@ -95,6 +98,7 @@ protected:
 	static void LoadTrial();
 
 	void RunPlayGame(int iPad);
+	void RunMinigames(int iPad);
 	void RunLeaderboards(int iPad);
 	void RunAchievements(int iPad);
 	void RunHelpAndOptions(int iPad);
@@ -114,6 +118,7 @@ public:
 	static int DeviceSelectReturned(void *pParam,bool bContinue);
 	static int SaveGameReturned(void *pParam,bool bContinue);
 	static int HelpAndOptions_SignInReturned(void *pParam,bool bContinue,int iPad);
+	static int Minigames_SignInReturned(void *pParam,bool bContinue,int iPad);
 	static int ExitGameReturned(void *pParam,int iPad,C4JStorage::EMessageResult result);
 	static int AchievementsDeviceSelectReturned(void *pParam,bool bContinue);
 	static int Achievements_SignInReturned(void *pParam,bool bContinue,int iPad);

@@ -11,7 +11,21 @@ public:
 	T *data;
 	unsigned int length;
 	arrayWithLength() { data = NULL; length = 0; }
-	arrayWithLength(unsigned int elements, bool bClearArray=true) { assert(elements!=0); data = new T[elements];  if(bClearArray){ memset( data,0,sizeof(T)*elements); }  this->length = elements; }
+	arrayWithLength(unsigned int elements, bool bClearArray=true)
+	{
+		if(elements == 0)
+		{
+			// Keep a valid pointer even for empty arrays to avoid null dereferences in
+			// legacy code paths that assume data is always non-null.
+			data = new T[1];
+			if(bClearArray){ memset(data,0,sizeof(T)); }
+			length = 0;
+			return;
+		}
+		data = new T[elements];
+		if(bClearArray){ memset( data,0,sizeof(T)*elements); }
+		this->length = elements;
+	}
 
 	// 4J Stu Added this ctor so I static init arrays in the Item derivation tree
 	arrayWithLength( T data[], unsigned int elements) { this->data = data; this->length = elements; }

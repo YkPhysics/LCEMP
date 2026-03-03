@@ -22,6 +22,7 @@
 #include "..\Minecraft.World\net.minecraft.world.h"
 #include "..\Minecraft.World\net.minecraft.world.level.h"
 #include "..\Minecraft.World\net.minecraft.world.level.tile.h"
+#include "..\Minecraft.World\net.minecraft.world.level.tile.entity.h"
 #include "..\Minecraft.World\Pos.h"
 #include "..\Minecraft.World\System.h"
 #include "..\Minecraft.World\StringHelpers.h"
@@ -66,6 +67,227 @@ bool MinecraftServer::s_slowQueuePacketSent = false;
 
 unordered_map<wstring, int> MinecraftServer::ironTimers;
 
+namespace
+{
+	const unsigned int MINIGAME_SETTINGS_FLAG = 0x80000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_MASK = 0x70000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_SHIFT = 28u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_MASK = 0x0C000000u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_SHIFT = 26u;
+	const unsigned int MINIGAME_TYPE_BEDWARS = 3u;
+	const unsigned int MINIGAME_ROLE_HUB = 0u;
+
+	struct BedwarsNpcDef
+	{
+		const wchar_t *label;
+		int offX;
+		int offZ;
+		float yRot;
+	};
+
+	static const BedwarsNpcDef kBedwarsNpcDefs[] =
+	{
+		{ L"Solo Queue",    -3,  0,  90.0f },
+		{ L"Doubles Queue",  0,  3, 180.0f },
+		{ L"Squads Queue",   3,  0, 270.0f },
+		{ L"Practice NPC",   0, -3,   0.0f },
+	};
+	static const wchar_t *kBedwarsNpcRainbowLabels[] =
+	{
+		L"\u00A7cS\u00A76o\u00A7el\u00A7ao \u00A7bQ\u00A7du\u00A7ce\u00A76u\u00A7ee",
+		L"\u00A7cD\u00A76o\u00A7eu\u00A7ab\u00A7bl\u00A7de\u00A7cs",
+		L"\u00A7cS\u00A76q\u00A7eu\u00A7aa\u00A7bd\u00A7ds",
+		L"\u00A7cP\u00A76r\u00A7ea\u00A7ac\u00A7bt\u00A7di\u00A7cc\u00A76e"
+	};
+
+	bool IsBedwarsMinigameSettings(unsigned int hostSettings)
+	{
+		if ((hostSettings & MINIGAME_SETTINGS_FLAG) == 0)
+		{
+			return false;
+		}
+
+		const unsigned int minigameType = (hostSettings & MINIGAME_SETTINGS_TYPE_MASK) >> MINIGAME_SETTINGS_TYPE_SHIFT;
+		return (minigameType == MINIGAME_TYPE_BEDWARS);
+	}
+
+	bool IsBedwarsHubSettings(unsigned int hostSettings)
+	{
+		if (!IsBedwarsMinigameSettings(hostSettings))
+		{
+			return false;
+		}
+		const unsigned int role = (hostSettings & MINIGAME_SETTINGS_ROLE_MASK) >> MINIGAME_SETTINGS_ROLE_SHIFT;
+		return (role == MINIGAME_ROLE_HUB);
+	}
+
+	void SpawnBedwarsQueueSign(ServerLevel *level, int x, int y, int z, const wchar_t *line1, const wchar_t *line2)
+	{
+		if (level == NULL)
+		{
+			return;
+		}
+
+		level->setTile(x, y - 1, z, Tile::cloth_Id);
+		level->setTileAndData(x, y, z, Tile::sign_Id, 8);
+
+		shared_ptr<SignTileEntity> sign = dynamic_pointer_cast<SignTileEntity>(level->getTileEntity(x, y, z));
+		if (sign != NULL)
+		{
+			wstring s1 = line1 != NULL ? line1 : L"";
+			wstring s2 = line2 != NULL ? line2 : L"";
+			wstring s3 = L"\u00A7aClick NPC";
+			wstring s4 = L"to join";
+			sign->SetMessage(0, s1);
+			sign->SetMessage(1, s2);
+			sign->SetMessage(2, s3);
+			sign->SetMessage(3, s4);
+			sign->setChanged();
+		}
+	}
+
+	void KeepBedwarsLobbyNpcsStationary(ServerLevel *level)
+	{
+		if (level == NULL)
+		{
+			return;
+		}
+		Pos *spawnPos = level->getSharedSpawnPos();
+		if (spawnPos == NULL)
+		{
+			return;
+		}
+		const double spawnX = (double)spawnPos->x + 0.5;
+		const double spawnY = (double)spawnPos->y + 1.0;
+		const double spawnZ = (double)spawnPos->z + 0.5;
+		delete spawnPos;
+		vector<shared_ptr<Entity> > entities = level->getAllEntities();
+		for (size_t i = 0; i < entities.size(); ++i)
+		{
+			shared_ptr<Entity> entity = entities[i];
+			if (entity == NULL || entity->GetType() != eTYPE_VILLAGER)
+			{
+				continue;
+			}
+			for (size_t j = 0; j < (sizeof(kBedwarsNpcDefs) / sizeof(kBedwarsNpcDefs[0])); ++j)
+			{
+				const BedwarsNpcDef &def = kBedwarsNpcDefs[j];
+				const double anchorX = spawnX + (double)def.offX;
+				const double anchorZ = spawnZ + (double)def.offZ;
+				const double dx = entity->x - anchorX;
+				const double dz = entity->z - anchorZ;
+				if ((dx * dx + dz * dz) <= (3.0 * 3.0))
+				{
+					entity->xd = 0.0;
+					entity->yd = 0.0;
+					entity->zd = 0.0;
+					entity->moveTo(anchorX, spawnY, anchorZ, def.yRot, 0.0f);
+					break;
+				}
+			}
+		}
+	}
+	void BuildBedwarsHub(ServerLevel *level)
+	{
+		if (level == NULL)
+		{
+			return;
+		}
+		Pos *spawnPos = level->getSharedSpawnPos();
+		if (spawnPos == NULL)
+		{
+			return;
+		}
+		const int sx = spawnPos->x;
+		const int sy = spawnPos->y;
+		const int sz = spawnPos->z;
+		delete spawnPos;
+		for (int dx = -14; dx <= 14; ++dx)
+		{
+			for (int dz = -14; dz <= 14; ++dz)
+			{
+				const int x = sx + dx;
+				const int z = sz + dz;
+				const int ax = abs(dx);
+				const int az = abs(dz);
+				for (int y = sy + 1; y <= sy + 6; ++y)
+				{
+					level->setTile(x, y, z, 0);
+				}
+				if (ax == 14 || az == 14)
+				{
+					level->setTile(x, sy, z, Tile::stoneBrick_Id);
+					if (((dx + dz) & 1) == 0)
+					{
+						level->setTile(x, sy + 1, z, Tile::glass_Id);
+					}
+				}
+				else if (ax <= 2 || az <= 2)
+				{
+					level->setTile(x, sy, z, Tile::stoneBrick_Id);
+				}
+			}
+		}
+		for (size_t i = 0; i < (sizeof(kBedwarsNpcDefs) / sizeof(kBedwarsNpcDefs[0])); ++i)
+		{
+			const BedwarsNpcDef &def = kBedwarsNpcDefs[i];
+			const int px = sx + def.offX;
+			const int pz = sz + def.offZ;
+			const int woolColor = (int)i + 1;
+			for (int ox = -1; ox <= 1; ++ox)
+			{
+				for (int oz = -1; oz <= 1; ++oz)
+				{
+					level->setTileAndData(px + ox, sy, pz + oz, Tile::cloth_Id, woolColor);
+				}
+			}
+		}
+	}
+	void SpawnBedwarsLobbyNpcs(ServerLevel *level)
+	{
+		if (level == NULL)
+		{
+			return;
+		}
+
+		Pos *spawnPos = level->getSharedSpawnPos();
+		if (spawnPos == NULL)
+		{
+			return;
+		}
+
+		const int spawnXi = spawnPos->x;
+		const int spawnYi = spawnPos->y;
+		const int spawnZi = spawnPos->z;
+		const double spawnX = (double)spawnXi + 0.5;
+		const double spawnY = (double)spawnYi + 1.0;
+		const double spawnZ = (double)spawnZi + 0.5;
+		delete spawnPos;
+
+		for (size_t i = 0; i < (sizeof(kBedwarsNpcDefs) / sizeof(kBedwarsNpcDefs[0])); ++i)
+		{
+			const BedwarsNpcDef &def = kBedwarsNpcDefs[i];
+			shared_ptr<Entity> npc(EntityIO::newByEnumType(eTYPE_VILLAGER, level));
+			if (npc == NULL)
+			{
+				continue;
+			}
+
+			npc->moveTo(spawnX + (double)def.offX, spawnY, spawnZ + (double)def.offZ, def.yRot, 0.0f);
+			npc->setDespawnProtected();
+			level->addEntity(npc);
+
+			const wchar_t *rainbowLabel = kBedwarsNpcRainbowLabels[i];
+			SpawnBedwarsQueueSign(level, spawnXi + def.offX, spawnYi + 2, spawnZi + def.offZ, L"\u00A7cB\u00A76e\u00A7ed\u00A7aw\u00A7ba\u00A7dr\u00A7cs", rainbowLabel);
+
+			app.DebugPrintf("Bedwars lobby NPC spawned: %ls at (%.1f, %.1f, %.1f)\n",
+				def.label,
+				spawnX + (double)def.offX,
+				spawnY,
+				spawnZ + (double)def.offZ);
+		}
+	}
+}
 MinecraftServer::MinecraftServer()
 {
 	// 4J - added initialisers
@@ -91,6 +313,9 @@ MinecraftServer::MinecraftServer()
 	m_texturePackId = 0;
 	maxBuildHeight = Level::maxBuildHeight;
 	m_postUpdateThread = NULL;
+	m_recentTps = (float)SharedConstants::TICKS_PER_SECOND;
+	m_lastTpsSampleMs = 0;
+	m_lastTpsSampleTick = 0;
 
 	commandDispatcher = new ServerCommandDispatcher();
 }
@@ -1060,6 +1285,12 @@ void MinecraftServer::run(__int64 seed, void *lpParameter)
     if (initServer(seed, initData, initSettings,findSeed))
 	{
 		ServerLevel *levelNormalDimension = levels[0];
+		if (IsBedwarsHubSettings(initSettings))
+		{
+			app.DebugPrintf("Bedwars mode detected - building hub and spawning lobby NPCs\n");
+			BuildBedwarsHub(levelNormalDimension);
+			SpawnBedwarsLobbyNpcs(levelNormalDimension);
+		}
 		// 4J-PB - Set the Stronghold position in the leveldata if there isn't one in there
 		Minecraft *pMinecraft = Minecraft::GetInstance();
 		LevelData *pLevelData=levelNormalDimension->getLevelData();
@@ -1077,6 +1308,8 @@ void MinecraftServer::run(__int64 seed, void *lpParameter)
 
         __int64 lastTime = System::currentTimeMillis();
         __int64 unprocessedTime = 0;
+		m_lastTpsSampleMs = lastTime;
+		m_lastTpsSampleTick = tickCount;
         while (running && !s_bServerHalted)
 		{
             __int64 now = System::currentTimeMillis();
@@ -1151,6 +1384,21 @@ void MinecraftServer::run(__int64 seed, void *lpParameter)
 					// Keep ticking the connections to stop them timing out
 					connection->tick();
 				}
+			}
+			__int64 tpsNow = System::currentTimeMillis();
+			__int64 tpsElapsed = tpsNow - m_lastTpsSampleMs;
+			if (tpsElapsed >= 1000)
+			{
+				int tickDelta = tickCount - m_lastTpsSampleTick;
+				if (tpsElapsed > 0)
+				{
+					m_recentTps = ((float)tickDelta * 1000.0f) / (float)tpsElapsed;
+					if (m_recentTps < 0.0f) m_recentTps = 0.0f;
+					float maxTps = (float)SharedConstants::TICKS_PER_SECOND;
+					if (m_recentTps > maxTps) m_recentTps = maxTps;
+				}
+				m_lastTpsSampleMs = tpsNow;
+				m_lastTpsSampleTick = tickCount;
 			}
 			if(MinecraftServer::setTimeAtEndOfTick)
 			{
@@ -1468,6 +1716,11 @@ void MinecraftServer::tick()
 			// 4J Stu - We set the levels difficulty based on the minecraft options
 			level->difficulty = app.GetGameHostOption(eGameHostOption_Difficulty); //pMinecraft->options->difficulty;
 
+			if (i == 0 && IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)))
+			{
+				KeepBedwarsLobbyNpcsStationary(level);
+			}
+
 #if DEBUG_SERVER_DONT_SPAWN_MOBS
 			level->setSpawnSettings(false, false);
 #else
@@ -1683,3 +1936,13 @@ bool MinecraftServer::flagEntitiesToBeRemoved(unsigned int *flags)
 	}
 	return removedFound;
 }
+
+
+
+
+
+
+
+
+
+

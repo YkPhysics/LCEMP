@@ -1,5 +1,6 @@
 #pragma once
 #include <deque>
+#include <set>
 #include "..\Minecraft.World\ArrayWithLength.h"
 
 class ServerPlayer;
@@ -34,6 +35,9 @@ private:
 	CRITICAL_SECTION m_kickPlayersCS;
 	deque<BYTE> m_smallIdsToClose;
 	CRITICAL_SECTION m_closePlayersCS;
+	set<wstring> m_whitelistNames;
+	set<wstring> m_operatorNames;
+	set<wstring> m_bannedNames;
 /* 4J - removed
 	Set<String> bans = new HashSet<String>();
     Set<String> ipBans = new HashSet<String>();
@@ -99,10 +103,19 @@ public:
     bool sendTo(const wstring& name, shared_ptr<Packet> packet);
 	// 4J Added ProgressListener *progressListener param and bDeleteGuestMaps param
     void saveAll(ProgressListener *progressListener, bool bDeleteGuestMaps = false);
-    void whiteList(const wstring& playerName);
+	void whiteList(const wstring& playerName);
     void blackList(const wstring& playerName);
 //    Set<String> getWhiteList();		/ 4J removed
     void reloadWhitelist();
+	void setWhitelistEnabled(bool enabled);
+	bool isWhitelistEnabled() const;
+	bool addOp(const wstring &playerName);
+	bool removeOp(const wstring &playerName);
+	void reloadOps();
+	bool banName(const wstring &playerName);
+	bool unbanName(const wstring &playerName);
+	void reloadBans();
+	bool isNameBanned(const wstring &name) const;
     void sendLevelInfo(shared_ptr<ServerPlayer> player, ServerLevel *level);
     void sendAllPlayerInfo(shared_ptr<ServerPlayer> player);
 	int getPlayerCount();

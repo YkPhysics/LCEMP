@@ -8,6 +8,7 @@
 #include "Settings.h"
 #include "PlayerList.h"
 #include "MultiPlayerLevel.h"
+#include "TextEditScreen.h"
 #include "..\Minecraft.World\Pos.h"
 #include "..\Minecraft.World\net.minecraft.world.level.h"
 #include "..\Minecraft.World\net.minecraft.world.level.storage.h"
@@ -269,6 +270,24 @@ void ServerPlayer::flushEntitiesToRemove()
 }
 
 
+void ServerPlayer::openTextEdit(shared_ptr<SignTileEntity> sign)
+{
+	if (sign == NULL || connection == NULL)
+	{
+		return;
+	}
+
+	if (connection->isLocal())
+	{
+		Minecraft *mc = Minecraft::GetInstance();
+		if (mc != NULL)
+		{
+			app.DebugPrintf("ServerPlayer::openTextEdit - opening TextEditScreen for local player");
+			mc->setScreen(new TextEditScreen(sign));
+		}
+	}
+}
+
 // 4J - have split doTick into 3 bits, so that we can call the doChunkSendingTick separately, but still do the equivalent of what calling a full doTick used to do, by calling this method
 void ServerPlayer::doTick(bool sendChunks, bool dontDelayChunks/*=false*/, bool ignorePortal/*=false*/)
 {
@@ -445,7 +464,7 @@ void ServerPlayer::doChunkSendingTick(bool dontDelayChunks)
 					for (unsigned int i = 0; i < tes->size(); i++)
 					{
 						// 4J Stu - Added delay param to ensure that these arrive after the BRUPs from above
-						// Fix for #9169 - ART : Sign text is replaced with the words “Awaiting approval”.
+						// Fix for #9169 - ART : Sign text is replaced with the words ?Awaiting approval?.
 						broadcast(tes->at(i), !connection->isLocal() && !dontDelayChunks);
 					}
 					delete tes;

@@ -31,6 +31,7 @@ void CConsoleMinecraftApp::ExitGame()
 }
 void CConsoleMinecraftApp::FatalLoadError()
 {
+	app.DebugPrintf("CConsoleMinecraftApp::FatalLoadError\n");
 }
 
 void CConsoleMinecraftApp::CaptureSaveThumbnail()

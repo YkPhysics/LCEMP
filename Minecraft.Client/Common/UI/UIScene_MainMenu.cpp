@@ -2,8 +2,10 @@
 #include "..\..\..\Minecraft.World\Mth.h"
 #include "..\..\..\Minecraft.World\StringHelpers.h"
 #include "..\..\..\Minecraft.World\Random.h"
+#include "..\..\..\Minecraft.World\LevelSettings.h"
 #include "..\..\User.h"
 #include "..\..\MinecraftServer.h"
+#include "..\..\Options.h"
 #include "UI.h"
 #include "UIScene_MainMenu.h"
 #ifdef __ORBIS__
@@ -51,6 +53,7 @@ UIScene_MainMenu::UIScene_MainMenu(int iPad, void *initData, UILayer *parentLaye
 		m_bTrialVersion=true;
 		m_buttons[(int)eControl_UnlockOrDLC].init(app.GetString(IDS_UNLOCK_FULL_GAME),eControl_UnlockOrDLC);
 	}
+	m_buttons[(int)eControl_Minigames].init(L"LCE Minigames", eControl_Minigames);
 
 #ifndef _DURANGO
 	m_buttons[(int)eControl_Exit].init(app.GetString(IDS_EXIT_GAME),eControl_Exit);
@@ -334,6 +337,12 @@ void UIScene_MainMenu::handlePress(F64 controlId, F64 childId)
 		m_eAction=eAction_RunUnlockOrDLC;
 		signInReturnedFunc = &UIScene_MainMenu::UnlockFullGame_SignInReturned;
 		break;
+	case eControl_Minigames:
+		// Launch the dedicated LCE minigames world flow.
+		ui.PlayUISFX(eSFX_Press);
+		m_eAction = eAction_RunMinigames;
+		signInReturnedFunc = &UIScene_MainMenu::Minigames_SignInReturned;
+		break;
 #if defined _XBOX
 	case eControl_Exit:
 		if( ProfileManager.IsFullVersion() )
@@ -399,6 +408,9 @@ void UIScene_MainMenu::RunAction(int iPad)
 	{
 	case eAction_RunGame:
 		RunPlayGame(iPad);
+		break;
+	case eAction_RunMinigames:
+		RunMinigames(iPad);
 		break;
 	case eAction_RunLeaderboards:
 		RunLeaderboards(iPad);
@@ -493,6 +505,7 @@ int UIScene_MainMenu::MustSignInReturned(void *pParam, int iPad, C4JStorage::EMe
 		switch(pClass->m_eAction)
 		{
 		case eAction_RunGame:			ProfileManager.RequestSignInUI(false,  true, false, false, true, &UIScene_MainMenu::CreateLoad_SignInReturned,		pClass,	iPad );	break;
+		case eAction_RunMinigames:		ProfileManager.RequestSignInUI(false, false,  true, false, true, &UIScene_MainMenu::Minigames_SignInReturned,		pClass,	iPad );	break;
 		case eAction_RunHelpAndOptions:	ProfileManager.RequestSignInUI(false, false,  true, false, true, &UIScene_MainMenu::HelpAndOptions_SignInReturned,	pClass,	iPad );	break;										 	   
 		case eAction_RunLeaderboards:	ProfileManager.RequestSignInUI(false, false,  true, false, true, &UIScene_MainMenu::Leaderboards_SignInReturned,	pClass,	iPad );	break;										 	   
 		case eAction_RunAchievements:	ProfileManager.RequestSignInUI(false, false,  true, false, true, &UIScene_MainMenu::Achievements_SignInReturned,	pClass,	iPad );	break;										 	   
@@ -654,6 +667,30 @@ int UIScene_MainMenu::HelpAndOptions_SignInReturned(void *pParam,bool bContinue,
 			}
 		}
 	}	
+
+	return 0;
+}
+
+int UIScene_MainMenu::Minigames_SignInReturned(void *pParam,bool bContinue,int iPad)
+{
+	UIScene_MainMenu *pClass = (UIScene_MainMenu *)pParam;
+
+	if(bContinue)
+	{
+		pClass->RunMinigames(iPad);
+	}
+	else
+	{
+		pClass->m_bIgnorePress=false;
+		ProfileManager.SetLockedProfile(-1);
+		for(int i=0;i<XUSER_MAX_COUNT;i++)
+		{
+			if(ProfileManager.IsSignedIn(i))
+			{
+				ProfileManager.SetCurrentGameActivity(i,CONTEXT_PRESENCE_MENUS,false);
+			}
+		}
+	}
 
 	return 0;
 }
@@ -1469,6 +1506,66 @@ void UIScene_MainMenu::RunPlayGame(int iPad)
 			}
 		}
 	}
+}
+
+void UIScene_MainMenu::RunMinigames(int iPad)
+{
+	app.DebugPrintf("UIScene_MainMenu::RunMinigames - requested by pad %d\n", iPad);
+
+	int hostPad = iPad;
+	if(hostPad < 0 || !ProfileManager.IsSignedIn(hostPad))
+	{
+		hostPad = ProfileManager.GetPrimaryPad();
+	}
+
+	UINT uiIDA[1];
+	uiIDA[0]=IDS_OK;
+
+	if(hostPad < 0)
+	{
+		m_bIgnorePress=false;
+		ui.RequestMessageBox(IDS_MUST_SIGN_IN_TITLE, IDS_MUST_SIGN_IN_TEXT, uiIDA, 1, iPad, NULL, NULL, app.GetStringTable());
+		return;
+	}
+
+	if(ProfileManager.IsGuest(hostPad))
+	{
+		m_bIgnorePress=false;
+		ui.RequestMessageBox(IDS_PRO_GUESTPROFILE_TITLE, IDS_PRO_GUESTPROFILE_TEXT, uiIDA, 1);
+		return;
+	}
+
+	bool isClientSide = ProfileManager.IsSignedInLive(hostPad);
+#ifdef __PSVITA__
+	if(app.GetGameSettings(ProfileManager.GetPrimaryPad(),eGameSetting_PSVita_NetworkModeAdhoc) == true)
+	{
+		CGameNetworkManager::setAdhocMode(true);
+		isClientSide = SQRNetworkManager_AdHoc_Vita::GetAdhocStatus();
+	}
+	else
+	{
+		CGameNetworkManager::setAdhocMode(false);
+	}
+#endif
+
+	if(!isClientSide)
+	{
+		m_bIgnorePress=false;
+		ui.RequestMessageBox(IDS_PRO_NOTONLINE_TITLE, IDS_PRO_NOTONLINE_TEXT, uiIDA, 1, hostPad, NULL, NULL, app.GetStringTable());
+		return;
+	}
+
+	ProfileManager.SetLockedProfile(hostPad);
+	ProfileManager.QuerySigninStatus();
+
+	Minecraft *pMinecraft = Minecraft::GetInstance();
+	pMinecraft->user->name = convStringToWstring(ProfileManager.GetGamertag(ProfileManager.GetPrimaryPad()));
+	app.ApplyGameSettingsChanged(hostPad);
+
+	LoadOrJoinMenuInitData *params = new LoadOrJoinMenuInitData();
+	params->bMinigamesMode = TRUE;
+	app.DebugPrintf("UIScene_MainMenu::RunMinigames - navigating to LoadOrJoin minigames hub (hostPad=%d)\n", hostPad);
+	ui.NavigateToScene(hostPad, eUIScene_LoadOrJoinMenu, params);
 }
 
 void UIScene_MainMenu::RunLeaderboards(int iPad)

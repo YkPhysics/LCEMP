@@ -12,6 +12,7 @@
 #define WIN64_NET_DEFAULT_PORT 25565
 #define WIN64_NET_MAX_CLIENTS 7
 #define WIN64_NET_RECV_BUFFER_SIZE 65536
+#define WIN64_NET_MAX_PACKET_SIZE (4 * 1024 * 1024)
 #define WIN64_LAN_DISCOVERY_PORT 25566
 #define WIN64_LAN_BROADCAST_MAGIC 0x4D434C4E
 
@@ -82,8 +83,9 @@ public:
 	static bool PopDisconnectedSmallId(BYTE *outSmallId);
 	static void PushFreeSmallId(BYTE smallId);
 
-	static bool StartAdvertising(int gamePort, const wchar_t *hostName, unsigned int gameSettings, unsigned int texPackId, unsigned char subTexId, unsigned short netVer);
+	static bool StartAdvertising(int gamePort, const wchar_t *hostName, unsigned int gameSettings, unsigned int texPackId, unsigned char subTexId, unsigned short netVer, unsigned char maxPlayers = MINECRAFT_NET_MAX_PLAYERS);
 	static void StopAdvertising();
+	static void UpdateAdvertiseGameSettings(unsigned int gameSettings);
 	static void UpdateAdvertisePlayerCount(BYTE count);
 	static void UpdateAdvertiseJoinable(bool joinable);
 
@@ -92,6 +94,7 @@ public:
 	static std::vector<Win64LANSession> GetDiscoveredSessions();
 
 	static int GetHostPort() { return s_hostGamePort; }
+	static BYTE GetMaxPlayers() { return s_maxPlayers; }
 
 private:
 	static DWORD WINAPI AcceptThreadProc(LPVOID param);
@@ -125,6 +128,7 @@ private:
 	static Win64LANBroadcast s_advertiseData;
 	static CRITICAL_SECTION s_advertiseLock;
 	static int s_hostGamePort;
+	static BYTE s_maxPlayers;
 
 	static SOCKET s_discoverySock;
 	static HANDLE s_discoveryThread;
@@ -142,6 +146,7 @@ private:
 extern bool g_Win64MultiplayerHost;
 extern bool g_Win64MultiplayerJoin;
 extern int g_Win64MultiplayerPort;
+extern int g_Win64MultiplayerMaxPlayers;
 extern char g_Win64MultiplayerIP[256];
 
 #endif

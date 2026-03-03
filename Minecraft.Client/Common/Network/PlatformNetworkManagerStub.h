@@ -48,6 +48,10 @@ public:
 	virtual bool IsPrivateGame() { return m_bIsPrivateGame; }
 	virtual bool IsLeavingGame() { return m_bLeavingGame; }
 	virtual void ResetLeavingGame() { m_bLeavingGame = false; }
+#ifdef _WINDOWS64
+	static void RequestServerTransfer(const char *hostIp, int hostPort);
+	static bool IsServerTransferInProgress();
+#endif
 
 	virtual void RegisterPlayerChangedCallback(int iPad, void (*callback)(void *callbackParam, INetworkPlayer *pPlayer, bool leaving), void *callbackParam);
 	virtual void UnRegisterPlayerChangedCallback(int iPad, void (*callback)(void *callbackParam, INetworkPlayer *pPlayer, bool leaving), void *callbackParam);
@@ -61,6 +65,9 @@ private:
 	virtual bool _LeaveGame(bool bMigrateHost, bool bLeaveRoom);
 	virtual void _HostGame(int dwUsersMask, unsigned char publicSlots = MINECRAFT_NET_MAX_PLAYERS, unsigned char privateSlots = 0);
 	virtual bool _StartGame();
+#ifdef _WINDOWS64
+	void QueueServerTransfer(const char *hostIp, int hostPort);
+#endif
 
     IQNet *             m_pIQNet;             // pointer to QNet interface
 
@@ -72,6 +79,13 @@ private:
 	bool			m_bLeaveGameOnTick;
 	bool			m_migrateHostOnLeave;
 	bool			m_bHostChanged;
+#ifdef _WINDOWS64
+	bool			m_bTransferPending;
+	bool			m_bTransferLeaving;
+	char			m_transferHostIp[64];
+	int				m_transferHostPort;
+	unsigned long long	m_transferSuppressErrorsUntilMs;
+#endif
 
 	bool			m_bIsOfflineGame;
 	bool			m_bIsPrivateGame;
@@ -166,6 +180,17 @@ public:
 	void NotifyPlayerLeaving( IQNetPlayer *pQNetPlayer );
 
 #ifndef _XBOX
-	void FakeLocalPlayerJoined() { NotifyPlayerJoined(m_pIQNet->GetLocalPlayerByUserIndex(0)); }
+	void FakeLocalPlayerJoined()
+	{
+		IQNetPlayer *player = m_pIQNet->GetLocalPlayerByUserIndex(0);
+		if (player == NULL)
+		{
+			// Dedicated/headless host can suppress slot 0 from "active local player"
+			// queries. Fall back to the canonical host slot so platform bookkeeping
+			// can still be initialized.
+			player = &IQNet::m_player[0];
+		}
+		NotifyPlayerJoined(player);
+	}
 #endif
 };

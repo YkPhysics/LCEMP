@@ -27,13 +27,1003 @@
 #include "ServerConnection.h"
 #include "..\Minecraft.World\GenericStats.h"
 #include "..\Minecraft.World\JavaMath.h"
-
+#include <cwctype>
+#include <cctype>
+#include <cstdlib>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <fstream>
+#include "..\Minecraft.World\InputOutputStream.h"
+#ifdef _WINDOWS64
+#include "Windows64\Network\WinsockNetLayer.h"
+#endif
 // 4J Added
 #include "..\Minecraft.World\net.minecraft.world.item.crafting.h"
 #include "Options.h"
 
 Random PlayerConnection::random;
 
+namespace
+{
+	const wstring LCE_TRANSFER_PACKET = L"LCE|Xfer";
+	const unsigned int MINIGAME_SETTINGS_FLAG = 0x80000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_MASK = 0x70000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_SHIFT = 28u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_MASK = 0x0C000000u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_SHIFT = 26u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_MASK = 0x03000000u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_SHIFT = 24u;
+	const unsigned int MINIGAME_TYPE_BEDWARS = 3u;
+	const unsigned int MINIGAME_ROLE_HUB = 0u;
+	const unsigned int MINIGAME_ROLE_MATCH = 1u;
+	const int PARTY_INVITE_TICKS = SharedConstants::TICKS_PER_SECOND * 30;
+
+	struct BedwarsQueueDef
+	{
+		const wchar_t *name;
+		int npcOffX;
+		int npcOffZ;
+		int queueOffX;
+		int queueOffZ;
+		float queueYaw;
+		int partyLimit;
+		int requiredPlayers;
+	};
+
+	static const BedwarsQueueDef BEDWARS_QUEUE_DEFS[] =
+	{
+		{ L"Solo",    -3,  0, -8,  0,  90.0f, 1, 2 },
+		{ L"Doubles",  0,  3,  0,  8, 180.0f, 2, 4 },
+		{ L"Squads",   3,  0,  8,  0, 270.0f, 4, 8 },
+		{ L"Practice", 0, -3,  0, -8,   0.0f, 1, 1 },
+	};
+
+	struct PartyInvite
+	{
+		BYTE leaderSmallId;
+		int expireTick;
+	};
+
+	struct BedwarsQueueEntry
+	{
+		BYTE leaderSmallId;
+		vector<BYTE> members;
+		int queuedTick;
+	};
+
+	static map<BYTE, BYTE> s_partyLeaderByMember;
+	static map<BYTE, set<BYTE> > s_partyMembersByLeader;
+	static map<BYTE, PartyInvite> s_partyInvites;
+	static vector<BedwarsQueueEntry> s_bedwarsQueueEntries[4];
+	static map<BYTE, int> s_queueIndexByMember;
+	static int s_lastQueueProcessTick = -1;
+
+	struct ProxyRoute
+	{
+		string hostIp;
+		int hostPort;
+		wstring displayName;
+	};
+
+	static map<wstring, ProxyRoute> s_proxyRoutes;
+	static bool s_proxyRoutesLoaded = false;
+
+	wstring ToLowerText(const wstring &value)
+	{
+		wstring result = value;
+		for (size_t i = 0; i < result.length(); ++i)
+		{
+			result[i] = (wchar_t)std::towlower(result[i]);
+		}
+		return result;
+	}
+
+	vector<wstring> SplitCommandTokens(const wstring &message)
+	{
+		vector<wstring> tokens;
+		size_t pos = 0;
+		while (pos < message.length())
+		{
+			while (pos < message.length() && std::iswspace(message[pos]))
+			{
+				++pos;
+			}
+			if (pos >= message.length())
+			{
+				break;
+			}
+			size_t end = pos;
+			while (end < message.length() && !std::iswspace(message[end]))
+			{
+				++end;
+			}
+			tokens.push_back(message.substr(pos, end - pos));
+			pos = end;
+		}
+		return tokens;
+	}
+
+	string TrimAsciiString(const string &value)
+	{
+		size_t first = 0;
+		while (first < value.length() && std::isspace((unsigned char)value[first]))
+		{
+			++first;
+		}
+
+		size_t last = value.length();
+		while (last > first && std::isspace((unsigned char)value[last - 1]))
+		{
+			--last;
+		}
+
+		return value.substr(first, last - first);
+	}
+
+	wstring AsciiToWide(const string &value)
+	{
+		wstring out;
+		out.reserve(value.length());
+		for (size_t i = 0; i < value.length(); ++i)
+		{
+			out.push_back((wchar_t)(unsigned char)value[i]);
+		}
+		return out;
+	}
+
+	bool OpenProxyRoutesFile(std::ifstream &in, string &outPath)
+	{
+		vector<string> candidates;
+		candidates.push_back("proxy-worlds.properties");
+		candidates.push_back("..\\proxy-worlds.properties");
+		candidates.push_back("..\\..\\proxy-worlds.properties");
+		candidates.push_back("..\\..\\..\\proxy-worlds.properties");
+
+		char modulePath[MAX_PATH] = {0};
+		if (::GetModuleFileNameA(NULL, modulePath, MAX_PATH) > 0)
+		{
+			string exePath(modulePath);
+			size_t slash = exePath.find_last_of("\\/");
+			if (slash != string::npos)
+			{
+				string exeDir = exePath.substr(0, slash);
+				candidates.push_back(exeDir + "\\proxy-worlds.properties");
+				candidates.push_back(exeDir + "\\..\\proxy-worlds.properties");
+				candidates.push_back(exeDir + "\\..\\..\\proxy-worlds.properties");
+			}
+		}
+
+		for (size_t i = 0; i < candidates.size(); ++i)
+		{
+			in.clear();
+			in.open(candidates[i].c_str(), std::ios::in);
+			if (in.good())
+			{
+				outPath = candidates[i];
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void LoadProxyRoutes(bool forceReload)
+	{
+		if (s_proxyRoutesLoaded && !forceReload)
+		{
+			return;
+		}
+
+		s_proxyRoutesLoaded = true;
+		s_proxyRoutes.clear();
+
+		std::ifstream in;
+		string loadedFromPath;
+		if (!OpenProxyRoutesFile(in, loadedFromPath))
+		{
+			return;
+		}
+
+		string line;
+		while (std::getline(in, line))
+		{
+			const size_t commentPos = line.find('#');
+			if (commentPos != string::npos)
+			{
+				line = line.substr(0, commentPos);
+			}
+
+			line = TrimAsciiString(line);
+			if (line.empty())
+			{
+				continue;
+			}
+
+			const size_t equalsPos = line.find('=');
+			if (equalsPos == string::npos)
+			{
+				continue;
+			}
+
+			string routeNameRaw = TrimAsciiString(line.substr(0, equalsPos));
+			string routeSpecRaw = TrimAsciiString(line.substr(equalsPos + 1));
+			if (routeNameRaw.empty() || routeSpecRaw.empty())
+			{
+				continue;
+			}
+
+			string displayNameRaw = routeNameRaw;
+			const size_t pipePos = routeSpecRaw.find('|');
+			if (pipePos != string::npos)
+			{
+				displayNameRaw = TrimAsciiString(routeSpecRaw.substr(pipePos + 1));
+				routeSpecRaw = TrimAsciiString(routeSpecRaw.substr(0, pipePos));
+			}
+
+			const size_t colonPos = routeSpecRaw.rfind(':');
+			if (colonPos == string::npos)
+			{
+				continue;
+			}
+
+			string ip = TrimAsciiString(routeSpecRaw.substr(0, colonPos));
+			string portText = TrimAsciiString(routeSpecRaw.substr(colonPos + 1));
+			if (ip.empty() || portText.empty())
+			{
+				continue;
+			}
+
+			char *portEnd = NULL;
+			long parsedPort = std::strtol(portText.c_str(), &portEnd, 10);
+			if (portEnd == NULL || *portEnd != '\0' || parsedPort <= 0 || parsedPort > 65535)
+			{
+				continue;
+			}
+
+			ProxyRoute route;
+			route.hostIp = ip;
+			route.hostPort = (int)parsedPort;
+			route.displayName = AsciiToWide(displayNameRaw);
+			if (route.displayName.empty())
+			{
+				route.displayName = AsciiToWide(routeNameRaw);
+			}
+
+			s_proxyRoutes[ToLowerText(AsciiToWide(routeNameRaw))] = route;
+		}
+	}
+
+	bool TryGetProxyRoute(const wstring &routeName, ProxyRoute &outRoute)
+	{
+		LoadProxyRoutes(false);
+		auto it = s_proxyRoutes.find(ToLowerText(routeName));
+		if (it == s_proxyRoutes.end())
+		{
+			return false;
+		}
+		outRoute = it->second;
+		return true;
+	}
+
+	int GetQueueIndexFromName(const wstring &name)
+	{
+		const wstring lower = ToLowerText(name);
+		if (lower == L"solo") return 0;
+		if (lower == L"double" || lower == L"doubles") return 1;
+		if (lower == L"squad" || lower == L"squads") return 2;
+		if (lower == L"practice") return 3;
+		return -1;
+	}
+
+	wstring GetQueueDisplayName(int queueIndex)
+	{
+		if (queueIndex < 0 || queueIndex >= (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])))
+		{
+			return L"Unknown";
+		}
+		return BEDWARS_QUEUE_DEFS[queueIndex].name;
+	}
+
+	BYTE GetSmallIdForPlayer(shared_ptr<ServerPlayer> serverPlayer)
+	{
+		if (serverPlayer == NULL || serverPlayer->connection == NULL)
+		{
+			return 0xFF;
+		}
+		INetworkPlayer *networkPlayer = serverPlayer->connection->getNetworkPlayer();
+		if (networkPlayer == NULL)
+		{
+			return 0xFF;
+		}
+		return networkPlayer->GetSmallId();
+	}
+
+	shared_ptr<ServerPlayer> FindPlayerBySmallId(MinecraftServer *server, BYTE smallId)
+	{
+		if (server == NULL || server->getPlayers() == NULL)
+		{
+			return nullptr;
+		}
+		for (AUTO_VAR(it, server->getPlayers()->players.begin()); it != server->getPlayers()->players.end(); ++it)
+		{
+			shared_ptr<ServerPlayer> check = *it;
+			if (GetSmallIdForPlayer(check) == smallId)
+			{
+				return check;
+			}
+		}
+		return nullptr;
+	}
+
+	shared_ptr<ServerPlayer> FindPlayerByNameInsensitive(MinecraftServer *server, const wstring &name)
+	{
+		if (server == NULL || server->getPlayers() == NULL)
+		{
+			return nullptr;
+		}
+		const wstring wanted = ToLowerText(name);
+		for (AUTO_VAR(it, server->getPlayers()->players.begin()); it != server->getPlayers()->players.end(); ++it)
+		{
+			shared_ptr<ServerPlayer> check = *it;
+			if (ToLowerText(check->name) == wanted)
+			{
+				return check;
+			}
+		}
+		return nullptr;
+	}
+
+	wstring GetPlayerNameBySmallId(MinecraftServer *server, BYTE smallId)
+	{
+		shared_ptr<ServerPlayer> target = FindPlayerBySmallId(server, smallId);
+		if (target != NULL)
+		{
+			return target->name;
+		}
+		wchar_t fallback[32];
+		swprintf_s(fallback, L"Player%u", (unsigned int)smallId);
+		return fallback;
+	}
+
+	void SendPlayerMessage(shared_ptr<ServerPlayer> target, const wstring &message)
+	{
+		if (target != NULL)
+		{
+			target->sendMessage(message, ChatPacket::e_ChatCustom);
+		}
+	}
+
+	bool IsBedwarsHostSettings(unsigned int hostSettings)
+	{
+		if ((hostSettings & MINIGAME_SETTINGS_FLAG) == 0)
+		{
+			return false;
+		}
+		return (((hostSettings & MINIGAME_SETTINGS_TYPE_MASK) >> MINIGAME_SETTINGS_TYPE_SHIFT) == MINIGAME_TYPE_BEDWARS);
+	}
+
+	unsigned int GetBedwarsRoleFromSettings(unsigned int hostSettings)
+	{
+		return (hostSettings & MINIGAME_SETTINGS_ROLE_MASK) >> MINIGAME_SETTINGS_ROLE_SHIFT;
+	}
+
+	unsigned int GetBedwarsQueueModeFromSettings(unsigned int hostSettings)
+	{
+		return (hostSettings & MINIGAME_SETTINGS_QUEUE_MASK) >> MINIGAME_SETTINGS_QUEUE_SHIFT;
+	}
+
+	bool IsBedwarsHubSettings(unsigned int hostSettings)
+	{
+		if (!IsBedwarsHostSettings(hostSettings))
+		{
+			return false;
+		}
+		return GetBedwarsRoleFromSettings(hostSettings) == MINIGAME_ROLE_HUB;
+	}
+
+	unsigned int ApplyBedwarsSessionMetadata(unsigned int hostSettings, unsigned int role, unsigned int queueMode)
+	{
+		hostSettings |= MINIGAME_SETTINGS_FLAG;
+		hostSettings &= ~MINIGAME_SETTINGS_TYPE_MASK;
+		hostSettings |= (MINIGAME_TYPE_BEDWARS << MINIGAME_SETTINGS_TYPE_SHIFT);
+		hostSettings &= ~MINIGAME_SETTINGS_ROLE_MASK;
+		hostSettings |= ((role & 0x3u) << MINIGAME_SETTINGS_ROLE_SHIFT);
+		hostSettings &= ~MINIGAME_SETTINGS_QUEUE_MASK;
+		hostSettings |= ((queueMode & 0x3u) << MINIGAME_SETTINGS_QUEUE_SHIFT);
+		return hostSettings;
+	}
+
+	BYTE GetPartyLeaderForMember(BYTE memberSmallId)
+	{
+		auto it = s_partyLeaderByMember.find(memberSmallId);
+		if (it == s_partyLeaderByMember.end())
+		{
+			return memberSmallId;
+		}
+		return it->second;
+	}
+
+	void EnsurePartyLeaderEntry(BYTE leaderSmallId)
+	{
+		if (s_partyMembersByLeader.find(leaderSmallId) == s_partyMembersByLeader.end())
+		{
+			s_partyMembersByLeader[leaderSmallId] = set<BYTE>();
+		}
+		s_partyMembersByLeader[leaderSmallId].insert(leaderSmallId);
+		s_partyLeaderByMember[leaderSmallId] = leaderSmallId;
+	}
+
+	vector<BYTE> GetPartyMembersForPlayer(BYTE memberSmallId)
+	{
+		vector<BYTE> members;
+		const BYTE leader = GetPartyLeaderForMember(memberSmallId);
+		auto it = s_partyMembersByLeader.find(leader);
+		if (it == s_partyMembersByLeader.end())
+		{
+			members.push_back(memberSmallId);
+			return members;
+		}
+		for (AUTO_VAR(itM, it->second.begin()); itM != it->second.end(); ++itM)
+		{
+			members.push_back(*itM);
+		}
+		if (members.empty())
+		{
+			members.push_back(memberSmallId);
+		}
+		return members;
+	}
+
+	void RemoveQueueGroupContainingMember(MinecraftServer *server, BYTE memberSmallId, bool announce, const wchar_t *reason)
+	{
+		auto queueIt = s_queueIndexByMember.find(memberSmallId);
+		if (queueIt == s_queueIndexByMember.end())
+		{
+			return;
+		}
+		const int queueIndex = queueIt->second;
+		if (queueIndex < 0 || queueIndex >= (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])))
+		{
+			s_queueIndexByMember.erase(memberSmallId);
+			return;
+		}
+
+		vector<BedwarsQueueEntry> &entries = s_bedwarsQueueEntries[queueIndex];
+		for (size_t i = 0; i < entries.size(); ++i)
+		{
+			bool contains = false;
+			for (size_t m = 0; m < entries[i].members.size(); ++m)
+			{
+				if (entries[i].members[m] == memberSmallId)
+				{
+					contains = true;
+					break;
+				}
+			}
+			if (!contains)
+			{
+				continue;
+			}
+
+			for (size_t m = 0; m < entries[i].members.size(); ++m)
+			{
+				const BYTE removeId = entries[i].members[m];
+				s_queueIndexByMember.erase(removeId);
+				if (announce)
+				{
+					shared_ptr<ServerPlayer> target = FindPlayerBySmallId(server, removeId);
+					if (target != NULL)
+					{
+						wstring msg = L"Left Bedwars ";
+						msg += GetQueueDisplayName(queueIndex);
+						msg += L" queue";
+						if (reason != NULL && reason[0] != 0)
+						{
+							msg += L" (";
+							msg += reason;
+							msg += L")";
+						}
+						msg += L".";
+						SendPlayerMessage(target, msg);
+					}
+				}
+			}
+
+			entries.erase(entries.begin() + i);
+			return;
+		}
+
+		// Defensive cleanup: stale map entry with no corresponding queue group.
+		s_queueIndexByMember.erase(memberSmallId);
+	}
+
+	void RemovePlayerFromAllQueues(MinecraftServer *server, BYTE memberSmallId, bool announce, const wchar_t *reason)
+	{
+		if (memberSmallId == 0xFF)
+		{
+			return;
+		}
+		while (s_queueIndexByMember.find(memberSmallId) != s_queueIndexByMember.end())
+		{
+			RemoveQueueGroupContainingMember(server, memberSmallId, announce, reason);
+		}
+	}
+
+	void LeaveParty(MinecraftServer *server, BYTE memberSmallId, bool announce)
+	{
+		if (memberSmallId == 0xFF)
+		{
+			return;
+		}
+
+		const BYTE leaderSmallId = GetPartyLeaderForMember(memberSmallId);
+		auto partyIt = s_partyMembersByLeader.find(leaderSmallId);
+		if (partyIt == s_partyMembersByLeader.end())
+		{
+			s_partyLeaderByMember.erase(memberSmallId);
+			s_partyInvites.erase(memberSmallId);
+			return;
+		}
+
+		if (leaderSmallId == memberSmallId)
+		{
+			for (AUTO_VAR(it, partyIt->second.begin()); it != partyIt->second.end(); ++it)
+			{
+				const BYTE other = *it;
+				s_partyLeaderByMember.erase(other);
+				if (announce)
+				{
+					shared_ptr<ServerPlayer> target = FindPlayerBySmallId(server, other);
+					if (target != NULL)
+					{
+						SendPlayerMessage(target, L"Party disbanded.");
+					}
+				}
+			}
+			s_partyMembersByLeader.erase(leaderSmallId);
+		}
+		else
+		{
+			partyIt->second.erase(memberSmallId);
+			s_partyLeaderByMember.erase(memberSmallId);
+			if (announce)
+			{
+				shared_ptr<ServerPlayer> leader = FindPlayerBySmallId(server, leaderSmallId);
+				if (leader != NULL)
+				{
+					wstring leftMsg = GetPlayerNameBySmallId(server, memberSmallId);
+					leftMsg += L" left your party.";
+					SendPlayerMessage(leader, leftMsg);
+				}
+				shared_ptr<ServerPlayer> member = FindPlayerBySmallId(server, memberSmallId);
+				if (member != NULL)
+				{
+					SendPlayerMessage(member, L"You left the party.");
+				}
+			}
+			if (partyIt->second.size() <= 1)
+			{
+				s_partyMembersByLeader.erase(leaderSmallId);
+				s_partyLeaderByMember.erase(leaderSmallId);
+			}
+		}
+
+		s_partyInvites.erase(memberSmallId);
+		for (AUTO_VAR(itI, s_partyInvites.begin()); itI != s_partyInvites.end();)
+		{
+			if (itI->second.leaderSmallId == memberSmallId)
+			{
+				itI = s_partyInvites.erase(itI);
+			}
+			else
+			{
+				++itI;
+			}
+		}
+	}
+
+	void ClearPlayerStateOnDisconnect(MinecraftServer *server, shared_ptr<ServerPlayer> leavingPlayer)
+	{
+		const BYTE smallId = GetSmallIdForPlayer(leavingPlayer);
+		if (smallId == 0xFF)
+		{
+			return;
+		}
+		RemovePlayerFromAllQueues(server, smallId, false, NULL);
+		LeaveParty(server, smallId, false);
+		s_partyInvites.erase(smallId);
+	}
+
+	vector<BYTE> BuildQueueGroupMembers(MinecraftServer *server, BYTE requestorSmallId)
+	{
+		vector<BYTE> members;
+		vector<BYTE> partyMembers = GetPartyMembersForPlayer(requestorSmallId);
+		for (size_t i = 0; i < partyMembers.size(); ++i)
+		{
+			if (FindPlayerBySmallId(server, partyMembers[i]) != NULL)
+			{
+				members.push_back(partyMembers[i]);
+			}
+		}
+		if (members.empty())
+		{
+			members.push_back(requestorSmallId);
+		}
+		std::sort(members.begin(), members.end());
+		members.erase(std::unique(members.begin(), members.end()), members.end());
+		return members;
+	}
+
+	bool JoinBedwarsQueue(MinecraftServer *server, shared_ptr<ServerPlayer> requestingPlayer, int queueIndex)
+	{
+		if (server == NULL || requestingPlayer == NULL)
+		{
+			return false;
+		}
+		if (queueIndex < 0 || queueIndex >= (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])))
+		{
+			return false;
+		}
+
+		const BYTE requestorSmallId = GetSmallIdForPlayer(requestingPlayer);
+		if (requestorSmallId == 0xFF)
+		{
+			return false;
+		}
+
+		vector<BYTE> members = BuildQueueGroupMembers(server, requestorSmallId);
+		const BedwarsQueueDef &queue = BEDWARS_QUEUE_DEFS[queueIndex];
+		if ((int)members.size() > queue.partyLimit)
+		{
+			wstring msg = L"Your party is too large for ";
+			msg += queue.name;
+			msg += L" queue.";
+			SendPlayerMessage(requestingPlayer, msg);
+			return false;
+		}
+
+		for (size_t i = 0; i < members.size(); ++i)
+		{
+			RemovePlayerFromAllQueues(server, members[i], false, NULL);
+		}
+
+		BedwarsQueueEntry entry;
+		entry.leaderSmallId = GetPartyLeaderForMember(requestorSmallId);
+		entry.members = members;
+		entry.queuedTick = server->tickCount;
+		s_bedwarsQueueEntries[queueIndex].push_back(entry);
+		for (size_t i = 0; i < members.size(); ++i)
+		{
+			s_queueIndexByMember[members[i]] = queueIndex;
+		}
+
+		for (size_t i = 0; i < members.size(); ++i)
+		{
+			shared_ptr<ServerPlayer> target = FindPlayerBySmallId(server, members[i]);
+			if (target != NULL)
+			{
+				wstring queuedMsg = L"Queued for Bedwars ";
+				queuedMsg += queue.name;
+				queuedMsg += L".";
+				SendPlayerMessage(target, queuedMsg);
+			}
+		}
+		return true;
+	}
+
+	bool IsBedwarsHubProtectedArea(ServerLevel *level, int x, int y, int z)
+	{
+		if (level == NULL || !IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)))
+		{
+			return false;
+		}
+		Pos *spawnPos = level->getSharedSpawnPos();
+		if (spawnPos == NULL)
+		{
+			return false;
+		}
+		const int dx = (int)Mth::abs((float)(x - spawnPos->x));
+		const int dz = (int)Mth::abs((float)(z - spawnPos->z));
+		const int minY = spawnPos->y - 3;
+		const int maxY = spawnPos->y + 12;
+		delete spawnPos;
+		return (dx <= 24 && dz <= 24 && y >= minY && y <= maxY);
+	}
+
+	int FindBedwarsQueueIndexForTarget(ServerLevel *level, shared_ptr<Entity> target)
+	{
+		if (level == NULL || target == NULL || target->GetType() != eTYPE_VILLAGER)
+		{
+			return -1;
+		}
+
+		Pos *spawnPos = level->getSharedSpawnPos();
+		if (spawnPos == NULL)
+		{
+			return -1;
+		}
+
+		const double spawnX = (double)spawnPos->x + 0.5;
+		const double spawnZ = (double)spawnPos->z + 0.5;
+		delete spawnPos;
+
+		const double maxMatchDistSqr = 2.5 * 2.5;
+		for (size_t i = 0; i < (sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])); ++i)
+		{
+			const double npcX = spawnX + (double)BEDWARS_QUEUE_DEFS[i].npcOffX;
+			const double npcZ = spawnZ + (double)BEDWARS_QUEUE_DEFS[i].npcOffZ;
+			const double dx = target->x - npcX;
+			const double dz = target->z - npcZ;
+			if ((dx * dx + dz * dz) <= maxMatchDistSqr)
+			{
+				return (int)i;
+			}
+		}
+
+		return -1;
+	}
+
+#ifdef _WINDOWS64
+	bool PickQueueEntriesRecursive(const vector<BedwarsQueueEntry> &entries, size_t startIndex, int remainingPlayers, vector<size_t> &pickedEntries)
+	{
+		if (remainingPlayers == 0)
+		{
+			return true;
+		}
+		if (startIndex >= entries.size() || remainingPlayers < 0)
+		{
+			return false;
+		}
+
+		for (size_t i = startIndex; i < entries.size(); ++i)
+		{
+			const int groupSize = (int)entries[i].members.size();
+			if (groupSize <= 0 || groupSize > remainingPlayers)
+			{
+				continue;
+			}
+
+			pickedEntries.push_back(i);
+			if (PickQueueEntriesRecursive(entries, i + 1, remainingPlayers - groupSize, pickedEntries))
+			{
+				return true;
+			}
+			pickedEntries.pop_back();
+		}
+
+		return false;
+	}
+
+	bool PickQueueEntriesForMatch(const vector<BedwarsQueueEntry> &entries, int requiredPlayers, vector<size_t> &pickedEntries)
+	{
+		pickedEntries.clear();
+		if (requiredPlayers <= 0)
+		{
+			return false;
+		}
+		return PickQueueEntriesRecursive(entries, 0, requiredPlayers, pickedEntries);
+	}
+
+	bool IsRemoteMatchServerCandidate(const Win64LANSession &session, int queueIndex, int requiredPlayers)
+	{
+		if (!session.isJoinable)
+		{
+			return false;
+		}
+		if (!IsBedwarsHostSettings(session.gameHostSettings))
+		{
+			return false;
+		}
+		if (GetBedwarsRoleFromSettings(session.gameHostSettings) != MINIGAME_ROLE_MATCH)
+		{
+			return false;
+		}
+		if ((int)GetBedwarsQueueModeFromSettings(session.gameHostSettings) != queueIndex)
+		{
+			return false;
+		}
+		int maxPlayers = (int)session.maxPlayers;
+		if (maxPlayers <= 0)
+		{
+			maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+		}
+		const int slotsAvailable = maxPlayers - (int)session.playerCount;
+		if (slotsAvailable < requiredPlayers)
+		{
+			return false;
+		}
+		return true;
+	}
+
+	bool FindBestQueueTarget(int queueIndex, int requiredPlayers, string &outIp, int &outPort)
+	{
+		std::vector<Win64LANSession> sessions = WinsockNetLayer::GetDiscoveredSessions();
+		int bestFreeSlots = -1;
+		int bestPlayers = 9999;
+		for (size_t i = 0; i < sessions.size(); ++i)
+		{
+			const Win64LANSession &session = sessions[i];
+			if (!IsRemoteMatchServerCandidate(session, queueIndex, requiredPlayers))
+			{
+				continue;
+			}
+			int maxPlayers = (int)session.maxPlayers;
+			if (maxPlayers <= 0)
+			{
+				maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+			}
+			const int freeSlots = maxPlayers - (int)session.playerCount;
+			if (freeSlots > bestFreeSlots || (freeSlots == bestFreeSlots && (int)session.playerCount < bestPlayers))
+			{
+				bestFreeSlots = freeSlots;
+				bestPlayers = (int)session.playerCount;
+				outIp = session.hostIP;
+				outPort = session.hostPort;
+			}
+		}
+		return (bestFreeSlots >= 0 && !outIp.empty() && outPort > 0);
+	}
+
+	void SendTransferPayloadEx(shared_ptr<ServerPlayer> player, const string &hostIp, int hostPort, int queueIndex, const wstring &destinationName)
+	{
+		if (player == NULL || player->connection == NULL)
+		{
+			return;
+		}
+
+		wstring hostIpW;
+		for (size_t i = 0; i < hostIp.length(); ++i)
+		{
+			hostIpW.push_back((wchar_t)hostIp[i]);
+		}
+
+		ByteArrayOutputStream rawOutput;
+		DataOutputStream output(&rawOutput);
+		output.writeByte((byte)1);
+		output.writeByte((byte)queueIndex);
+		output.writeInt(hostPort);
+		output.writeUTF(hostIpW);
+		output.writeUTF(destinationName);
+
+		player->connection->send(shared_ptr<CustomPayloadPacket>(new CustomPayloadPacket(LCE_TRANSFER_PACKET, rawOutput.toByteArray())));
+	}
+
+	void SendTransferPayload(shared_ptr<ServerPlayer> player, const string &hostIp, int hostPort, int queueIndex)
+	{
+		SendTransferPayloadEx(player, hostIp, hostPort, queueIndex, GetQueueDisplayName(queueIndex));
+	}
+#endif
+
+	void ProcessBedwarsQueueSystem(MinecraftServer *server)
+	{
+		if (server == NULL)
+		{
+			return;
+		}
+		if (server->getPlayers() == NULL || server->getPlayers()->players.empty())
+		{
+			for (int i = 0; i < (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])); ++i)
+			{
+				s_bedwarsQueueEntries[i].clear();
+			}
+			s_queueIndexByMember.clear();
+			s_partyInvites.clear();
+			s_partyLeaderByMember.clear();
+			s_partyMembersByLeader.clear();
+			return;
+		}
+
+		if (s_lastQueueProcessTick == server->tickCount)
+		{
+			return;
+		}
+		s_lastQueueProcessTick = server->tickCount;
+
+		for (AUTO_VAR(itInvite, s_partyInvites.begin()); itInvite != s_partyInvites.end();)
+		{
+			if (server->tickCount >= itInvite->second.expireTick)
+			{
+				itInvite = s_partyInvites.erase(itInvite);
+			}
+			else
+			{
+				++itInvite;
+			}
+		}
+
+		for (int queueIndex = 0; queueIndex < (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])); ++queueIndex)
+		{
+			vector<BedwarsQueueEntry> &entries = s_bedwarsQueueEntries[queueIndex];
+			for (size_t i = 0; i < entries.size();)
+			{
+				bool valid = true;
+				for (size_t m = 0; m < entries[i].members.size(); ++m)
+				{
+					if (FindPlayerBySmallId(server, entries[i].members[m]) == NULL)
+					{
+						valid = false;
+						break;
+					}
+				}
+				if (!valid)
+				{
+					for (size_t m = 0; m < entries[i].members.size(); ++m)
+					{
+						s_queueIndexByMember.erase(entries[i].members[m]);
+					}
+					entries.erase(entries.begin() + i);
+					continue;
+				}
+				++i;
+			}
+		}
+
+#ifdef _WINDOWS64
+		if (!IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)))
+		{
+			return;
+		}
+
+		for (int queueIndex = 0; queueIndex < (int)(sizeof(BEDWARS_QUEUE_DEFS) / sizeof(BEDWARS_QUEUE_DEFS[0])); ++queueIndex)
+		{
+			vector<BedwarsQueueEntry> &entries = s_bedwarsQueueEntries[queueIndex];
+			if (entries.empty())
+			{
+				continue;
+			}
+
+			const int requiredPlayers = BEDWARS_QUEUE_DEFS[queueIndex].requiredPlayers;
+			int totalQueued = 0;
+			for (size_t i = 0; i < entries.size(); ++i)
+			{
+				totalQueued += (int)entries[i].members.size();
+			}
+			if (totalQueued < requiredPlayers)
+			{
+				continue;
+			}
+
+			string targetIp;
+			int targetPort = 0;
+			if (!FindBestQueueTarget(queueIndex, requiredPlayers, targetIp, targetPort))
+			{
+				continue;
+			}
+
+			vector<size_t> pickedEntries;
+			if (!PickQueueEntriesForMatch(entries, requiredPlayers, pickedEntries))
+			{
+				continue;
+			}
+
+			app.DebugPrintf("Bedwars queue %d matched %d players -> %s:%d\n", queueIndex, requiredPlayers, targetIp.c_str(), targetPort);
+
+			for (int pick = (int)pickedEntries.size() - 1; pick >= 0; --pick)
+			{
+				const size_t entryIndex = pickedEntries[pick];
+				if (entryIndex >= entries.size())
+				{
+					continue;
+				}
+				const BedwarsQueueEntry entry = entries[entryIndex];
+				for (size_t m = 0; m < entry.members.size(); ++m)
+				{
+					const BYTE memberId = entry.members[m];
+					s_queueIndexByMember.erase(memberId);
+					shared_ptr<ServerPlayer> target = FindPlayerBySmallId(server, memberId);
+					if (target != NULL)
+					{
+						SendPlayerMessage(target, L"Match found. Transferring to game server...");
+						SendTransferPayload(target, targetIp, targetPort, queueIndex);
+					}
+				}
+				entries.erase(entries.begin() + entryIndex);
+			}
+		}
+#endif
+	}
+}
 PlayerConnection::PlayerConnection(MinecraftServer *server, Connection *connection, shared_ptr<ServerPlayer> player)
 {
 	// 4J - added initialisers
@@ -107,6 +1097,8 @@ void PlayerConnection::tick()
 	{
 		dropSpamTickCount--;
 	}
+
+	ProcessBedwarsQueueSystem(server);
 }
 
 void PlayerConnection::disconnect(DisconnectPacket::eDisconnectReason reason)
@@ -119,6 +1111,7 @@ void PlayerConnection::disconnect(DisconnectPacket::eDisconnectReason reason)
 	}
 
 	app.DebugPrintf("PlayerConnection disconect reason: %d\n", reason );
+	ClearPlayerStateOnDisconnect(server, player);
 	player->disconnect();
 
 	// 4J Stu - Need to remove the player from the receiving list before their socket is NULLed so that we can find another player on their system
@@ -417,6 +1410,11 @@ void PlayerConnection::handlePlayerAction(shared_ptr<PlayerActionPacket> packet)
 	int x = packet->x;
 	int y = packet->y;
 	int z = packet->z;
+	if (packet->action == PlayerActionPacket::START_DESTROY_BLOCK && IsBedwarsHubProtectedArea(level, x, y, z))
+	{
+		player->connection->send(shared_ptr<TileUpdatePacket>(new TileUpdatePacket(x, y, z, level)));
+		return;
+	}
 	if (shouldVerifyLocation)
 	{
 		double xDist = player->x - (x + 0.5);
@@ -482,6 +1480,11 @@ void PlayerConnection::handleUseItem(shared_ptr<UseItemPacket> packet)
 	int y = packet->getY();
 	int z = packet->getZ();
 	int face = packet->getFace();
+	if (face != 255 && IsBedwarsHubProtectedArea(level, x, y, z))
+	{
+		player->connection->send(shared_ptr<TileUpdatePacket>(new TileUpdatePacket(x, y, z, level)));
+		return;
+	}
 	
 	// 4J Stu - We don't have ops, so just use the levels setting
 	bool canEditSpawn = level->canEditSpawn; // = level->dimension->id != 0 || server->players->isOp(player->name);
@@ -636,48 +1639,677 @@ void PlayerConnection::handleSetCarriedItem(shared_ptr<SetCarriedItemPacket> pac
 
 void PlayerConnection::handleChat(shared_ptr<ChatPacket> packet)
 {
-	// 4J - TODO
-#if 0
-	wstring message = packet->message;
-	if (message.length() > SharedConstants::maxChatLength)
+	if(packet == NULL || packet->m_stringArgs.size() == 0)
 	{
-		disconnect(L"Chat message too long");
 		return;
 	}
-	message = message.trim();
-	for (int i = 0; i < message.length(); i++)
+
+	wstring message = packet->m_stringArgs[0];
+	if(message.length() > SharedConstants::maxChatLength)
 	{
-		if (SharedConstants.acceptableLetters.indexOf(message.charAt(i)) < 0 && (int) message.charAt(i) < 32)
+		disconnect(DisconnectPacket::eDisconnect_Overflow);
+		return;
+	}
+
+	size_t first = 0;
+	while(first < message.length() && std::iswspace(message[first]))
+	{
+		++first;
+	}
+
+	size_t last = message.length();
+	while(last > first && std::iswspace(message[last - 1]))
+	{
+		--last;
+	}
+
+	message = message.substr(first, last - first);
+	if(message.length() == 0)
+	{
+		return;
+	}
+
+	for(size_t i = 0; i < message.length(); ++i)
+	{
+		wchar_t ch = message[i];
+		if(ch < 32 && SharedConstants::acceptableLetters.find(ch) == wstring::npos)
 		{
-			disconnect(L"Illegal characters in chat");
 			return;
 		}
 	}
 
-	if (message.startsWith("/"))
+	if(message[0] == L'/')
 	{
 		handleCommand(message);
-	} else {
-		message = "<" + player.name + "> " + message;
-		logger.info(message);
-		server.players.broadcastAll(new ChatPacket(message));
+		return;
 	}
+
+	server->getPlayers()->broadcastAll(shared_ptr<ChatPacket>(new ChatPacket(player->name, ChatPacket::e_ChatCustom, -1, message)));
+
 	chatSpamTickCount += SharedConstants::TICKS_PER_SECOND;
-	if (chatSpamTickCount > SharedConstants::TICKS_PER_SECOND * 10)
+	if(chatSpamTickCount > SharedConstants::TICKS_PER_SECOND * 10)
 	{
-		disconnect("disconnect.spam");
+		disconnect(DisconnectPacket::eDisconnect_Overflow);
 	}
-#endif
 }
 
 void PlayerConnection::handleCommand(const wstring& message)
 {
-	// 4J - TODO
-#if 0
-	server.getCommandDispatcher().performCommand(player, message);
-#endif
-}
+	if (message.length() < 2 || message[0] != L'/')
+	{
+		return;
+	}
 
+	vector<wstring> tokens = SplitCommandTokens(message.substr(1));
+	if (tokens.empty())
+	{
+		return;
+	}
+
+	const wstring command = ToLowerText(tokens[0]);
+	const BYTE selfSmallId = GetSmallIdForPlayer(player);
+	INetworkPlayer *requestPlayer = getNetworkPlayer();
+	const bool isHost = (requestPlayer != NULL && requestPlayer->IsHost());
+	const bool isPersistedOp = (server != NULL && server->getPlayers() != NULL && server->getPlayers()->isOp(player->name));
+	const bool hasAdminPermission = isHost || player->isModerator() || isPersistedOp;
+
+	if (command == L"tps")
+	{
+		float tps = server->getRecentTps();
+		wchar_t tpsText[64];
+		swprintf_s(tpsText, L"TPS: %.2f", tps);
+		player->sendMessage(tpsText, ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"help")
+	{
+		player->sendMessage(L"/tps, /list, /party, /queue, /queuehost, /hub, /server", ChatPacket::e_ChatCustom);
+		if (hasAdminPermission)
+		{
+			player->sendMessage(L"Admin: /kick /ban /pardon /op /deop /tp /gamemode /save-on /save-off /save-all /whitelist /send", ChatPacket::e_ChatCustom);
+		}
+		return;
+	}
+
+	if (command == L"list")
+	{
+		wchar_t listInfo[80];
+		const int count = (server != NULL && server->getPlayers() != NULL) ? server->getPlayers()->getPlayerCount() : 0;
+		const int maxPlayers = (server != NULL && server->getPlayers() != NULL) ? server->getPlayers()->getMaxPlayers() : MINECRAFT_NET_MAX_PLAYERS;
+		swprintf_s(listInfo, L"Players: %d/%d", count, maxPlayers);
+		player->sendMessage(listInfo, ChatPacket::e_ChatCustom);
+		if (server != NULL && server->getPlayers() != NULL)
+		{
+			const wstring names = server->getPlayers()->getPlayerNames();
+			if (!names.empty())
+			{
+				player->sendMessage(names, ChatPacket::e_ChatCustom);
+			}
+		}
+		return;
+	}
+
+	if (command == L"server")
+	{
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /server <list|name|reload>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const wstring sub = ToLowerText(tokens[1]);
+		if (sub == L"list")
+		{
+			LoadProxyRoutes(false);
+			if (s_proxyRoutes.empty())
+			{
+				player->sendMessage(L"No proxy routes configured. Create proxy-worlds.properties.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			player->sendMessage(L"Available servers:", ChatPacket::e_ChatCustom);
+			for (AUTO_VAR(itRoute, s_proxyRoutes.begin()); itRoute != s_proxyRoutes.end(); ++itRoute)
+			{
+				const ProxyRoute &route = itRoute->second;
+				wstring line = L" - ";
+				line += itRoute->first;
+				line += L" (";
+				line += route.displayName;
+				line += L")";
+				player->sendMessage(line, ChatPacket::e_ChatCustom);
+			}
+			return;
+		}
+
+		if (sub == L"reload")
+		{
+			if (!hasAdminPermission)
+			{
+				player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+				return;
+			}
+			LoadProxyRoutes(true);
+			player->sendMessage(L"Proxy route config reloaded.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		ProxyRoute route;
+		if (!TryGetProxyRoute(sub, route))
+		{
+			player->sendMessage(L"Unknown server route. Use /server list.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		SendTransferPayloadEx(player, route.hostIp, route.hostPort, 0xFF, route.displayName);
+		wstring msg = L"Transferring to ";
+		msg += route.displayName;
+		msg += L"...";
+		player->sendMessage(msg, ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"send")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 3)
+		{
+			player->sendMessage(L"Usage: /send <player> <server>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		shared_ptr<ServerPlayer> target = FindPlayerByNameInsensitive(server, tokens[1]);
+		if (target == NULL || target->connection == NULL)
+		{
+			player->sendMessage(L"Player not found.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		ProxyRoute route;
+		if (!TryGetProxyRoute(tokens[2], route))
+		{
+			player->sendMessage(L"Unknown server route. Use /server list.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		SendTransferPayloadEx(target, route.hostIp, route.hostPort, 0xFF, route.displayName);
+		wstring adminMsg = L"Sent ";
+		adminMsg += target->name;
+		adminMsg += L" to ";
+		adminMsg += route.displayName;
+		player->sendMessage(adminMsg, ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"whitelist")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /whitelist <on|off|add|remove|reload>", ChatPacket::e_ChatCustom);
+			return;
+		}
+		const wstring sub = ToLowerText(tokens[1]);
+		if (sub == L"on")
+		{
+			server->getPlayers()->setWhitelistEnabled(true);
+			player->sendMessage(L"Whitelist enabled.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (sub == L"off")
+		{
+			server->getPlayers()->setWhitelistEnabled(false);
+			player->sendMessage(L"Whitelist disabled.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (sub == L"reload")
+		{
+			server->getPlayers()->reloadWhitelist();
+			player->sendMessage(L"Whitelist reloaded.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (sub == L"add" && tokens.size() >= 3)
+		{
+			server->getPlayers()->whiteList(tokens[2]);
+			wstring msg = L"Added to whitelist: ";
+			msg += tokens[2];
+			player->sendMessage(msg, ChatPacket::e_ChatCustom);
+			return;
+		}
+		if ((sub == L"remove" || sub == L"del") && tokens.size() >= 3)
+		{
+			server->getPlayers()->blackList(tokens[2]);
+			wstring msg = L"Removed from whitelist: ";
+			msg += tokens[2];
+			player->sendMessage(msg, ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		player->sendMessage(L"Usage: /whitelist <on|off|add|remove|reload>", ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"op" || command == L"deop")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(command == L"op" ? L"Usage: /op <player>" : L"Usage: /deop <player>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const bool isAdd = (command == L"op");
+		const wstring &targetName = tokens[1];
+		bool changed = isAdd ? server->getPlayers()->addOp(targetName) : server->getPlayers()->removeOp(targetName);
+
+		shared_ptr<ServerPlayer> target = FindPlayerByNameInsensitive(server, targetName);
+		if (target != NULL)
+		{
+			target->setPlayerGamePrivilege(Player::ePlayerGamePrivilege_Op, isAdd ? 1 : 0);
+			server->getPlayers()->broadcastAll(shared_ptr<PlayerInfoPacket>(new PlayerInfoPacket(target)));
+		}
+
+		if (changed)
+		{
+			wstring ok = (isAdd ? L"Granted op to " : L"Removed op from ");
+			ok += targetName;
+			player->sendMessage(ok, ChatPacket::e_ChatCustom);
+		}
+		else
+		{
+			wstring msg = (isAdd ? L"Already op: " : L"Not op: ");
+			msg += targetName;
+			player->sendMessage(msg, ChatPacket::e_ChatCustom);
+		}
+		return;
+	}
+
+	if (command == L"kick" || command == L"ban" || command == L"pardon")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		if ((command == L"kick" || command == L"ban") && tokens.size() < 2)
+		{
+			player->sendMessage(command == L"kick" ? L"Usage: /kick <player>" : L"Usage: /ban <player>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		if (command == L"pardon")
+		{
+			if (tokens.size() < 2)
+			{
+				player->sendMessage(L"Usage: /pardon <player>", ChatPacket::e_ChatCustom);
+				return;
+			}
+			if (server->getPlayers()->unbanName(tokens[1]))
+			{
+				wstring msg = L"Unbanned ";
+				msg += tokens[1];
+				player->sendMessage(msg, ChatPacket::e_ChatCustom);
+			}
+			else
+			{
+				player->sendMessage(L"Player was not banned.", ChatPacket::e_ChatCustom);
+			}
+			return;
+		}
+
+		shared_ptr<ServerPlayer> target = FindPlayerByNameInsensitive(server, tokens[1]);
+		if (target == NULL || target->connection == NULL)
+		{
+			player->sendMessage(L"Player not found.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (target == player)
+		{
+			player->sendMessage(L"You cannot target yourself.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		if (command == L"ban")
+		{
+			server->getPlayers()->banName(target->name);
+		}
+
+		target->connection->setWasKicked();
+		target->connection->disconnect(command == L"ban" ? DisconnectPacket::eDisconnect_Banned : DisconnectPacket::eDisconnect_Kicked);
+		return;
+	}
+
+	if (command == L"save-on" || command == L"save-off" || command == L"save-all")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (command == L"save-all")
+		{
+			server->getPlayers()->saveAll(NULL, false);
+			player->sendMessage(L"Saved all player data.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const bool disableSaving = (command == L"save-off");
+		app.SetGameHostOption(eGameHostOption_DisableSaving, disableSaving ? 1 : 0);
+		player->sendMessage(disableSaving ? L"World saving disabled." : L"World saving enabled.", ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"gamemode" || command == L"gm")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /gamemode <survival|creative|0|1> [player]", ChatPacket::e_ChatCustom);
+			return;
+		}
+		const wstring gmArg = ToLowerText(tokens[1]);
+		GameType *gameType = NULL;
+		if (gmArg == L"0" || gmArg == L"s" || gmArg == L"survival")
+		{
+			gameType = GameType::SURVIVAL;
+		}
+		else if (gmArg == L"1" || gmArg == L"c" || gmArg == L"creative")
+		{
+			gameType = GameType::CREATIVE;
+		}
+		if (gameType == NULL)
+		{
+			player->sendMessage(L"Unknown gamemode.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		shared_ptr<ServerPlayer> target = player;
+		if (tokens.size() >= 3)
+		{
+			target = FindPlayerByNameInsensitive(server, tokens[2]);
+			if (target == NULL)
+			{
+				player->sendMessage(L"Player not found.", ChatPacket::e_ChatCustom);
+				return;
+			}
+		}
+
+		target->setPlayerGamePrivilege(Player::ePlayerGamePrivilege_CreativeMode, gameType == GameType::CREATIVE ? 1 : 0);
+		target->gameMode->setGameModeForPlayer(gameType);
+		target->connection->send(shared_ptr<GameEventPacket>(new GameEventPacket(GameEventPacket::CHANGE_GAME_MODE, gameType->getId())));
+		server->getPlayers()->broadcastAll(shared_ptr<PlayerInfoPacket>(new PlayerInfoPacket(target)));
+		player->sendMessage(L"Gamemode updated.", ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"tp")
+	{
+		if (!hasAdminPermission)
+		{
+			player->sendMessage(L"You do not have permission.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /tp <target> [destination]", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		shared_ptr<ServerPlayer> toMove = player;
+		shared_ptr<ServerPlayer> destination = NULL;
+		if (tokens.size() == 2)
+		{
+			destination = FindPlayerByNameInsensitive(server, tokens[1]);
+		}
+		else
+		{
+			toMove = FindPlayerByNameInsensitive(server, tokens[1]);
+			destination = FindPlayerByNameInsensitive(server, tokens[2]);
+		}
+		if (toMove == NULL || destination == NULL || toMove->connection == NULL)
+		{
+			player->sendMessage(L"Player not found.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		toMove->connection->teleport(destination->x, destination->y, destination->z, destination->yRot, destination->xRot);
+		player->sendMessage(L"Teleported.", ChatPacket::e_ChatCustom);
+		return;
+	}
+	if (command == L"hub" && IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)))
+	{
+		ServerLevel *level = server->getLevel(player->dimension);
+		if (level != NULL)
+		{
+			Pos *spawnPos = level->getSharedSpawnPos();
+			if (spawnPos != NULL)
+			{
+				teleport((double)spawnPos->x + 0.5, (double)spawnPos->y + 1.0, (double)spawnPos->z + 0.5, 0.0f, 0.0f);
+				delete spawnPos;
+			}
+		}
+		player->sendMessage(L"Returned to Bedwars hub.", ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"queue" && IsBedwarsHostSettings(app.GetGameHostOption(eGameHostOption_All)))
+	{
+		if (!IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)))
+		{
+			player->sendMessage(L"Queues are only available in Bedwars hub mode.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /queue <solo|doubles|squads|practice|leave>", ChatPacket::e_ChatCustom);
+			return;
+		}
+		const wstring queueArg = ToLowerText(tokens[1]);
+		if (queueArg == L"leave")
+		{
+			RemovePlayerFromAllQueues(server, selfSmallId, true, L"left");
+			return;
+		}
+		const int queueIndex = GetQueueIndexFromName(queueArg);
+		if (queueIndex < 0)
+		{
+			player->sendMessage(L"Unknown queue. Use solo, doubles, squads or practice.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		JoinBedwarsQueue(server, player, queueIndex);
+		return;
+	}
+
+	if (command == L"queuehost" && IsBedwarsHostSettings(app.GetGameHostOption(eGameHostOption_All)))
+	{
+		INetworkPlayer *networkPlayer = getNetworkPlayer();
+		if (networkPlayer == NULL || !networkPlayer->IsHost())
+		{
+			player->sendMessage(L"Only the host can change queue hosting mode.", ChatPacket::e_ChatCustom);
+			return;
+		}
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /queuehost <hub|solo|doubles|squads|practice>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const wstring hostMode = ToLowerText(tokens[1]);
+		unsigned int hostSettings = app.GetGameHostOption(eGameHostOption_All);
+		if (hostMode == L"hub")
+		{
+			hostSettings = ApplyBedwarsSessionMetadata(hostSettings, MINIGAME_ROLE_HUB, 0u);
+			app.SetGameHostOption(eGameHostOption_All, hostSettings);
+			g_NetworkManager.UpdateAndSetGameSessionData();
+			player->sendMessage(L"This server is now a Bedwars hub.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const int queueIndex = GetQueueIndexFromName(hostMode);
+		if (queueIndex < 0)
+		{
+			player->sendMessage(L"Unknown queue mode for /queuehost.", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		hostSettings = ApplyBedwarsSessionMetadata(hostSettings, MINIGAME_ROLE_MATCH, (unsigned int)queueIndex);
+		app.SetGameHostOption(eGameHostOption_All, hostSettings);
+		g_NetworkManager.UpdateAndSetGameSessionData();
+
+		wstring modeMsg = L"This server now accepts ";
+		modeMsg += GetQueueDisplayName(queueIndex);
+		modeMsg += L" queue transfers.";
+		player->sendMessage(modeMsg, ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	if (command == L"party")
+	{
+		if (selfSmallId == 0xFF)
+		{
+			return;
+		}
+
+		if (tokens.size() < 2)
+		{
+			player->sendMessage(L"Usage: /party <invite|accept|leave|list>", ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		const wstring sub = ToLowerText(tokens[1]);
+		if (sub == L"invite")
+		{
+			if (tokens.size() < 3)
+			{
+				player->sendMessage(L"Usage: /party invite <player>", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			const BYTE currentLeader = GetPartyLeaderForMember(selfSmallId);
+			if (currentLeader != selfSmallId)
+			{
+				player->sendMessage(L"Only the party leader can invite players.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			shared_ptr<ServerPlayer> target = FindPlayerByNameInsensitive(server, tokens[2]);
+			if (target == NULL)
+			{
+				player->sendMessage(L"Player not found.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			const BYTE targetSmallId = GetSmallIdForPlayer(target);
+			if (targetSmallId == 0xFF || targetSmallId == selfSmallId)
+			{
+				player->sendMessage(L"Invalid party target.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			PartyInvite invite;
+			invite.leaderSmallId = selfSmallId;
+			invite.expireTick = server->tickCount + PARTY_INVITE_TICKS;
+			s_partyInvites[targetSmallId] = invite;
+
+			wstring sentMsg = L"Invited ";
+			sentMsg += target->name;
+			sentMsg += L" to your party.";
+			player->sendMessage(sentMsg, ChatPacket::e_ChatCustom);
+
+			wstring recvMsg = player->name;
+			recvMsg += L" invited you to a party. Type /party accept.";
+			SendPlayerMessage(target, recvMsg);
+			return;
+		}
+
+		if (sub == L"accept")
+		{
+			auto inviteIt = s_partyInvites.find(selfSmallId);
+			if (inviteIt == s_partyInvites.end())
+			{
+				player->sendMessage(L"You have no pending party invite.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			const BYTE leaderSmallId = inviteIt->second.leaderSmallId;
+			shared_ptr<ServerPlayer> leader = FindPlayerBySmallId(server, leaderSmallId);
+			if (leader == NULL)
+			{
+				s_partyInvites.erase(selfSmallId);
+				player->sendMessage(L"That party invite has expired.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			RemovePlayerFromAllQueues(server, selfSmallId, true, L"party updated");
+			LeaveParty(server, selfSmallId, false);
+			EnsurePartyLeaderEntry(leaderSmallId);
+			s_partyMembersByLeader[leaderSmallId].insert(selfSmallId);
+			s_partyLeaderByMember[selfSmallId] = leaderSmallId;
+			s_partyInvites.erase(selfSmallId);
+
+			wstring joinedMsg = L"You joined ";
+			joinedMsg += leader->name;
+			joinedMsg += L"'s party.";
+			player->sendMessage(joinedMsg, ChatPacket::e_ChatCustom);
+
+			wstring leaderMsg = player->name;
+			leaderMsg += L" joined your party.";
+			SendPlayerMessage(leader, leaderMsg);
+			return;
+		}
+
+		if (sub == L"leave")
+		{
+			RemovePlayerFromAllQueues(server, selfSmallId, true, L"party left");
+			LeaveParty(server, selfSmallId, true);
+			return;
+		}
+
+		if (sub == L"list")
+		{
+			const BYTE leaderSmallId = GetPartyLeaderForMember(selfSmallId);
+			auto partyIt = s_partyMembersByLeader.find(leaderSmallId);
+			if (partyIt == s_partyMembersByLeader.end() || partyIt->second.size() <= 1)
+			{
+				player->sendMessage(L"You are not in a party.", ChatPacket::e_ChatCustom);
+				return;
+			}
+
+			wstring listMsg = L"Party: ";
+			bool first = true;
+			for (AUTO_VAR(itM, partyIt->second.begin()); itM != partyIt->second.end(); ++itM)
+			{
+				if (!first) listMsg += L", ";
+				listMsg += GetPlayerNameBySmallId(server, *itM);
+				first = false;
+			}
+			player->sendMessage(listMsg, ChatPacket::e_ChatCustom);
+			return;
+		}
+
+		player->sendMessage(L"Usage: /party <invite|accept|leave|list>", ChatPacket::e_ChatCustom);
+		return;
+	}
+
+	player->sendMessage(L"Unknown command. Use /help.", ChatPacket::e_ChatCustom);
+}
 void PlayerConnection::handleAnimate(shared_ptr<AnimatePacket> packet)
 {
 	if (packet->action == AnimatePacket::SWING)
@@ -728,6 +2360,7 @@ void PlayerConnection::setShowOnMaps(bool bVal)
 void PlayerConnection::handleDisconnect(shared_ptr<DisconnectPacket> packet)
 {
 	// 4J Stu - Need to remove the player from the receiving list before their socket is NULLed so that we can find another player on their system
+	ClearPlayerStateOnDisconnect(server, player);
 	server->getPlayers()->removePlayerFromReceiving( player );
 	connection->close(DisconnectPacket::eDisconnect_Quitting);
 }
@@ -765,6 +2398,34 @@ void PlayerConnection::handleInteract(shared_ptr<InteractPacket> packet)
 	// even though the ray is blocked.
 	if (target != NULL) // && player->canSee(target) && player->distanceToSqr(target) < 6 * 6)
 	{
+		if (packet->action == InteractPacket::INTERACT &&
+			IsBedwarsHubSettings(app.GetGameHostOption(eGameHostOption_All)) &&
+			target->GetType() == eTYPE_VILLAGER)
+		{
+			const int queueIndex = FindBedwarsQueueIndexForTarget(level, target);
+			if (queueIndex >= 0)
+			{
+				Pos *spawnPos = level->getSharedSpawnPos();
+				if (spawnPos != NULL)
+				{
+					const BedwarsQueueDef &queue = BEDWARS_QUEUE_DEFS[queueIndex];
+					const double queueX = (double)spawnPos->x + 0.5 + (double)queue.queueOffX;
+					const double queueY = (double)spawnPos->y + 1.0;
+					const double queueZ = (double)spawnPos->z + 0.5 + (double)queue.queueOffZ;
+					delete spawnPos;
+
+					teleport(queueX, queueY, queueZ, queue.queueYaw, 0.0f);
+				}
+
+				JoinBedwarsQueue(server, player, queueIndex);
+			}
+			else
+			{
+				send(shared_ptr<ChatPacket>(new ChatPacket(L"Bedwars", ChatPacket::e_ChatCustom, -1, L"This Bedwars NPC is unavailable.")));
+			}
+			return;
+		}
+
 		//boole canSee = player->canSee(target);
 		//double maxDist = 6 * 6;
 		//if (!canSee)
@@ -1715,3 +3376,18 @@ bool PlayerConnection::isGuest()
 		return isGuest;
 	}
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

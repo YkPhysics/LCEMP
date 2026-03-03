@@ -38,6 +38,11 @@ void Screen::keyPressed(wchar_t eventCharacter, int eventKey)
 	}
 }
 
+void Screen::HandleKeyPressed(wchar_t eventCharacter, int eventKey)
+{
+	keyPressed(eventCharacter, eventKey);
+}
+
 wstring Screen::getClipboard()
 {
 	// 4J - removed

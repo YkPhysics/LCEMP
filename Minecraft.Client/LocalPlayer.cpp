@@ -328,12 +328,6 @@ void LocalPlayer::aiStep()
 		}
 	}
 	if (isSneaking()) sprintTriggerTime = 0;
-#ifdef _WINDOWS64
-	if (input->sprinting && onGround && enoughFoodToSprint && !isUsingItem() && !hasEffect(MobEffect::blindness) && !isSneaking())
-	{
-		setSprinting(true);
-	}
-#endif
 	// 4J-PB - try not stopping sprint on collision
 	//if (isSprinting() && (input->ya < runTreshold || horizontalCollision || !enoughFoodToSprint))
 	if (isSprinting() && (input->ya < runTreshold || !enoughFoodToSprint))
@@ -591,9 +585,7 @@ void LocalPlayer::closeContainer()
 
 void LocalPlayer::openTextEdit(shared_ptr<SignTileEntity> sign)
 {
-	bool success = app.LoadSignEntryMenu(GetXboxPad(), sign );
-	if( success ) ui.PlayUISFX(eSFX_Press);
-	//minecraft->setScreen(new TextEditScreen(sign));
+	minecraft->setScreen(new TextEditScreen(sign));
 }
 
 bool LocalPlayer::openContainer(shared_ptr<Container> container)
@@ -1619,4 +1611,3 @@ void LocalPlayer::SetPlayerAdditionalModelParts(vector<ModelPart *>pAdditionalMo
 {
 	m_pAdditionalModelParts=pAdditionalModelParts;
 }
-

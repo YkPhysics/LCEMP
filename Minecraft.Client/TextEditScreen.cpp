@@ -62,6 +62,10 @@ void TextEditScreen::keyPressed(wchar_t ch, int eventKey)
     if (eventKey == Keyboard::KEY_DOWN || eventKey == Keyboard::KEY_RETURN) line = (line + 1) & 3;
 
 	wstring temp=sign->GetMessage(line);
+	while (!temp.empty() && temp[temp.length() - 1] == L' ')
+	{
+		temp = temp.substr(0, temp.length() - 1);
+	}
     if (eventKey == Keyboard::KEY_BACK && temp.length() > 0)
 	{
         temp = temp.substr(0, temp.length() - 1);

@@ -182,7 +182,7 @@ public:
 
 	intArray getIntArray(wchar_t * name)
 	{
-		if (tags.find(name) == tags.end()) return intArray(0);
+		if (tags.find(name) == tags.end()) return intArray();
 		return ((IntArrayTag *) tags[name])->data;
 	}
 

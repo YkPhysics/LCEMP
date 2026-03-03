@@ -28,6 +28,7 @@ protected:
 public:
 	static wstring getClipboard();
     static void setClipboard(const wstring& str);
+	void HandleKeyPressed(wchar_t eventCharacter, int eventKey);
 private:
 	Button *clickedButton;
 
@@ -51,4 +52,3 @@ public:
     virtual void confirmResult(bool result, int id);
     virtual void tabPressed();
 };
-

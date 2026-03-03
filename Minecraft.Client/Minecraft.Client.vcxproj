@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="ContentPackage_NO_TU|Durango">
@@ -1311,17 +1311,6 @@ if not exist "$(TargetDir)\savedata" mkdir "$(TargetDir)\savedata"</Command>
       <DeploymentType>CopyToHardDrive</DeploymentType>
       <DeploymentFiles>$(RemoteRoot)=$(ImagePath);$(RemoteRoot)\res=Xbox\res;$(RemoteRoot)=Xbox\AvatarAwards;$(RemoteRoot)\Tutorial=Xbox\Tutorial\Tutorial;$(RemoteRoot)=Xbox\584111F70AAAAAAA;$(RemoteRoot)=Xbox\kinect\speech;$(RemoteRoot)=Xbox\XZP\TMSFiles.xzp</DeploymentFiles>
     </Deploy>
-    <PostBuildEvent>
-      <Command>copy /Y "$(TargetPath)" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Iggy\lib\redist64\iggy_w64.dll" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Miles\lib\redist64\mss64.dll" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Iggy\lib\redist64\iggy_w64.dll" "$(OutDir)"
-copy /Y "$(ProjectDir)Windows64\Miles\lib\redist64\mss64.dll" "$(OutDir)"
-xcopy /Y /I /E "$(ProjectDir)redist64" "$(OutDir)redist64\"
-if not exist "$(OutDir)Durango\Sound\" mkdir "$(OutDir)Durango\Sound\"
-copy /Y "$(ProjectDir)Durango\Sound\Minecraft.msscmp" "$(OutDir)Durango\Sound\"</Command>
-      <Message>Copying exe and DLLs to Minecraft.Client and output folders</Message>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Durango'">
     <ClCompile>
@@ -1432,7 +1421,7 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(OutDir)$(ProjectName).pdb</ProgramDatabaseFile>
-      <AdditionalDependencies>d3d11.lib;..\Minecraft.World\x64_Release\Minecraft.World.lib;XInput9_1_0.lib;Windows64\Iggy\lib\iggy_w64.lib;..\Minecraft.Client\Windows64\Miles\Lib\mss64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;..\Minecraft.World\x64_Release\Minecraft.World.lib;XInput9_1_0.lib;Windows64\Iggy\lib\iggy_w64.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <SuppressStartupBanner>false</SuppressStartupBanner>
     </Link>
@@ -1450,17 +1439,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <DeploymentType>CopyToHardDrive</DeploymentType>
       <DeploymentFiles>$(RemoteRoot)=$(ImagePath);$(RemoteRoot)\res=Xbox\res;$(RemoteRoot)=Xbox\AvatarAwards;$(RemoteRoot)\Tutorial=Xbox\Tutorial\Tutorial;$(RemoteRoot)=Xbox\584111F70AAAAAAA;$(RemoteRoot)=Xbox\kinect\speech;$(RemoteRoot)=Xbox\XZP\TMSFiles.xzp</DeploymentFiles>
     </Deploy>
-    <PostBuildEvent>
-      <Command>copy /Y "$(TargetPath)" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Iggy\lib\redist64\iggy_w64.dll" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Miles\lib\redist64\mss64.dll" "$(ProjectDir)"
-copy /Y "$(ProjectDir)Windows64\Iggy\lib\redist64\iggy_w64.dll" "$(OutDir)"
-copy /Y "$(ProjectDir)Windows64\Miles\lib\redist64\mss64.dll" "$(OutDir)"
-xcopy /Y /I /E "$(ProjectDir)redist64" "$(OutDir)redist64\"
-if not exist "$(OutDir)Durango\Sound\" mkdir "$(OutDir)Durango\Sound\"
-copy /Y "$(ProjectDir)Durango\Sound\Minecraft.msscmp" "$(OutDir)Durango\Sound\"</Command>
-      <Message>Copying exe and DLLs to Minecraft.Client and output folders</Message>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|x64'">
     <ClCompile>
@@ -2850,7 +2828,7 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Xbox 360'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
@@ -2894,8 +2872,8 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Xbox 360'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
@@ -2939,7 +2917,7 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Xbox 360'">true</ExcludedFromBuild>
@@ -28935,7 +28913,7 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|PS3'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|PSVita'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Xbox 360'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_Vita|Xbox 360'">true</ExcludedFromBuild>
@@ -28943,7 +28921,7 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|PS3'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|PSVita'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Xbox 360'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Texture.cpp" />
@@ -34103,7 +34081,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Input.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34148,7 +34125,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Input_d.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34193,7 +34169,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Input_r.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34238,7 +34213,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Profile.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34283,7 +34257,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Profile_d.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34328,7 +34301,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Profile_r.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34373,7 +34345,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Render.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34418,7 +34389,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Render_d.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34463,7 +34433,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Render_r.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34508,7 +34477,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Storage.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34553,7 +34521,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Storage_d.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34598,7 +34565,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\4J_Storage_r.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|PSVita'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|PSVita'">true</ExcludedFromBuild>
@@ -34643,21 +34609,14 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\4JLibs\libs\libSceNpToolkitUtils_rtti.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|PSVita'">true</ExcludedFromBuild>
     </Library>
-    <Library Include="PSVita\4JLibs\libs\libSceNpToolkitUtils_rtti_dbg.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
+    <Library Include="PSVita\4JLibs\libs\libSceNpToolkitUtils_rtti_dbg.a" />
     <Library Include="PSVita\4JLibs\libs\libSceNpToolkit_rtti.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|PSVita'">true</ExcludedFromBuild>
     </Library>
-    <Library Include="PSVita\4JLibs\libs\libSceNpToolkit_rtti_dbg.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
+    <Library Include="PSVita\4JLibs\libs\libSceNpToolkit_rtti_dbg.a" />
     <Library Include="PSVita\Iggy\lib\libiggyperfmon_psp2.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Durango'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|Durango'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|Durango'">true</ExcludedFromBuild>
@@ -34695,7 +34654,6 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
     <Library Include="PSVita\Iggy\lib\libiggy_psp2.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Durango'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage_NO_TU|Durango'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseForArt|Durango'">true</ExcludedFromBuild>
@@ -34732,18 +34690,10 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Xbox 360'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Xbox 360'">true</ExcludedFromBuild>
     </Library>
-    <Library Include="PSVita\Miles\lib\binkapsp2.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
-    <Library Include="PSVita\Miles\lib\fltpsp2.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
-    <Library Include="PSVita\Miles\lib\msspsp2.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
-    <Library Include="PSVita\Miles\lib\msspsp2midi.a">
-      <ExcludedFromBuild Condition="'$(Platform)'=='x64'">true</ExcludedFromBuild>
-    </Library>
+    <Library Include="PSVita\Miles\lib\binkapsp2.a" />
+    <Library Include="PSVita\Miles\lib\fltpsp2.a" />
+    <Library Include="PSVita\Miles\lib\msspsp2.a" />
+    <Library Include="PSVita\Miles\lib\msspsp2midi.a" />
     <Library Include="Windows64\4JLibs\libs\4J_Input.lib">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ContentPackage|Durango'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='CONTENTPACKAGE_SYMBOLS|Durango'">true</ExcludedFromBuild>
@@ -36890,3 +36840,4 @@ xcopy /q /y /i /s /e $(ProjectDir)Durango\CU  $(LayoutDir)Image\Loose\CU</Comman
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
+

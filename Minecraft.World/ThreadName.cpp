@@ -18,11 +18,20 @@ void SetThreadName( DWORD dwThreadID, LPCSTR szThreadName )
     info.szName = szThreadName;
     info.dwThreadID = dwThreadID;
     info.dwFlags = 0;
+
+#if defined(_WINDOWS64)
+	// The 0x406D1388 thread-name exception is debugger-only metadata.
+	// Skip raising it when no debugger is attached to avoid standalone exits.
+	if (!IsDebuggerPresent())
+	{
+		return;
+	}
+#endif
 	
-#if ( defined _WINDOWS64 | defined _DURANGO )
+#if ( defined _WINDOWS64 || defined _DURANGO )
 	__try
 	{
-		RaiseException( 0x406D1388, 0, sizeof(info)/sizeof(DWORD), (ULONG_PTR *)&info );
+		RaiseException( 0x406D1388, 0, 4, (ULONG_PTR *)&info );
 	}
 	__except( GetExceptionCode()==0x406D1388 ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_EXECUTE_HANDLER )
 	{

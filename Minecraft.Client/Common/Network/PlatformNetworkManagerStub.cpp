@@ -7,6 +7,15 @@
 #include "..\..\Windows64\Network\WinsockNetLayer.h"
 #include "..\..\Minecraft.h"
 #include "..\..\User.h"
+extern bool g_Win64DedicatedServerMode;
+
+namespace
+{
+	static unsigned long long GetNowMs64()
+	{
+		return (unsigned long long)GetTickCount64();
+	}
+}
 #endif
 
 CPlatformNetworkManagerStub *g_pPlatformNetworkManager;
@@ -14,6 +23,12 @@ CPlatformNetworkManagerStub *g_pPlatformNetworkManager;
 
 void CPlatformNetworkManagerStub::NotifyPlayerJoined(IQNetPlayer *pQNetPlayer	)
 {
+	if (pQNetPlayer == NULL)
+	{
+		app.DebugPrintf("NotifyPlayerJoined called with NULL player\n");
+		return;
+	}
+
 	const char * pszDescription;
 
 	// 4J Stu - We create a fake socket for every where that we need an INBOUND queue of game data. Outbound
@@ -94,7 +109,7 @@ void CPlatformNetworkManagerStub::NotifyPlayerJoined(IQNetPlayer *pQNetPlayer	)
 	if( m_pIQNet->IsHost() )
 	{
 		// 4J-PB - only the host should do this
-//		g_NetworkManager.UpdateAndSetGameSessionData();
+		g_NetworkManager.UpdateAndSetGameSessionData();
 		SystemFlagAddPlayer( networkPlayer );
 	}
 	
@@ -121,6 +136,12 @@ void CPlatformNetworkManagerStub::NotifyPlayerJoined(IQNetPlayer *pQNetPlayer	)
 
 void CPlatformNetworkManagerStub::NotifyPlayerLeaving(IQNetPlayer *pQNetPlayer)
 {
+	if (pQNetPlayer == NULL)
+	{
+		app.DebugPrintf("NotifyPlayerLeaving called with NULL player\n");
+		return;
+	}
+
 	app.DebugPrintf("Player 0x%p \"%ls\" leaving.\n", pQNetPlayer, pQNetPlayer->GetGamertag());
 
 	INetworkPlayer *networkPlayer = getNetworkPlayer(pQNetPlayer);
@@ -148,6 +169,12 @@ void CPlatformNetworkManagerStub::NotifyPlayerLeaving(IQNetPlayer *pQNetPlayer)
 	}
 
 	removeNetworkPlayer(pQNetPlayer);
+
+	if (m_pIQNet->IsHost())
+	{
+		// Exclude the leaving player from advertised count immediately.
+		g_NetworkManager.UpdateAndSetGameSessionData(networkPlayer);
+	}
 }
 
 bool CPlatformNetworkManagerStub::Initialise(CGameNetworkManager *pGameNetworkManager, int flagIndexSize)
@@ -164,6 +191,13 @@ bool CPlatformNetworkManagerStub::Initialise(CGameNetworkManager *pGameNetworkMa
 	m_bLeavingGame = false;
 	m_bLeaveGameOnTick = false;
 	m_bHostChanged = false;
+#ifdef _WINDOWS64
+	m_bTransferPending = false;
+	m_bTransferLeaving = false;
+	m_transferHostIp[0] = 0;
+	m_transferHostPort = 0;
+	m_transferSuppressErrorsUntilMs = 0;
+#endif
 
 	m_bSearchResultsReady = false;
 	m_bSearchPending = false;
@@ -213,6 +247,46 @@ void CPlatformNetworkManagerStub::DoWork()
 {
 #ifdef _WINDOWS64
 	extern QNET_STATE _iQNetStubState;
+	if (m_bTransferPending)
+	{
+		if (g_NetworkManager.IsInSession())
+		{
+			if (!m_bTransferLeaving)
+			{
+				m_bTransferLeaving = true;
+				app.DebugPrintf("Win64 LAN: Transfer requested to %s:%d, leaving current session\n",
+					m_transferHostIp, m_transferHostPort);
+				g_NetworkManager.LeaveGame(false);
+			}
+			return;
+		}
+
+		FriendSessionInfo targetSession;
+		memset(&targetSession, 0, sizeof(targetSession));
+		strncpy_s(targetSession.data.hostIP, sizeof(targetSession.data.hostIP), m_transferHostIp, _TRUNCATE);
+		targetSession.data.hostPort = m_transferHostPort;
+		wcsncpy_s(targetSession.data.hostName, XUSER_NAME_SIZE, L"Server Transfer", _TRUNCATE);
+		targetSession.data.netVersion = MINECRAFT_NET_VERSION;
+		targetSession.data.isJoinable = true;
+		targetSession.data.isReadyToJoin = true;
+
+		int primaryPad = ProfileManager.GetPrimaryPad();
+		if (primaryPad < 0)
+		{
+			primaryPad = 0;
+		}
+		const int localUsersMask = GetLocalPlayerMask(primaryPad);
+		const int joinResult = JoinGame(&targetSession, localUsersMask, ProfileManager.GetLockedProfile());
+		app.DebugPrintf("Win64 LAN: Transfer join result=%d for %s:%d\n",
+			joinResult, m_transferHostIp, m_transferHostPort);
+
+		m_bTransferPending = false;
+		m_bTransferLeaving = false;
+		m_transferHostIp[0] = 0;
+		m_transferHostPort = 0;
+		m_transferSuppressErrorsUntilMs = GetNowMs64() + 10000ULL;
+	}
+
 	if (_iQNetStubState == QNET_STATE_SESSION_STARTING && app.GetGameStarted())
 	{
 		_iQNetStubState = QNET_STATE_GAME_PLAY;
@@ -236,8 +310,21 @@ void CPlatformNetworkManagerStub::DoWork()
 				qnetPlayer->m_gamertag[0] = 0;
 				qnetPlayer->SetCustomDataValue(0);
 				WinsockNetLayer::PushFreeSmallId(disconnectedSmallId);
-				if (IQNet::s_playerCount > 1)
-					IQNet::s_playerCount--;
+
+				// Recompute active slot span instead of blindly decrementing.
+				// A lower smallId can disconnect while higher smallIds are still active.
+				DWORD highestActive = 1;
+				for (DWORD idx = 1; idx < MINECRAFT_NET_MAX_PLAYERS; ++idx)
+				{
+					if (IQNet::m_player[idx].GetCustomDataValue() != 0)
+					{
+						highestActive = idx + 1;
+					}
+				}
+				IQNet::s_playerCount = highestActive;
+				app.DebugPrintf("Win64 LAN: Recomputed active player slot span to %u after disconnect smallId=%u\n",
+					(unsigned int)IQNet::s_playerCount,
+					(unsigned int)disconnectedSmallId);
 			}
 		}
 	}
@@ -322,6 +409,14 @@ bool CPlatformNetworkManagerStub::LeaveGame(bool bMigrateHost)
 	SystemFlagReset();
 
 #ifdef _WINDOWS64
+	// Clear all back-pointers from IQNet slots to deleted network players.
+	for (int idx = 0; idx < MINECRAFT_NET_MAX_PLAYERS; ++idx)
+	{
+		IQNet::m_player[idx].SetCustomDataValue(0);
+	}
+#endif
+
+#ifdef _WINDOWS64
 	WinsockNetLayer::Shutdown();
 	WinsockNetLayer::Initialize();
 #endif
@@ -356,13 +451,26 @@ void CPlatformNetworkManagerStub::HostGame(int localUsersMask, bool bOnlineGame,
 	_HostGame( localUsersMask, publicSlots, privateSlots );
 
 #ifdef _WINDOWS64
-	int port = WIN64_NET_DEFAULT_PORT;
+	unsigned char advertiseMaxPlayers = publicSlots;
+	if (advertiseMaxPlayers == 0 || advertiseMaxPlayers > MINECRAFT_NET_MAX_PLAYERS)
+	{
+		advertiseMaxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+	}
+
+	g_Win64MultiplayerMaxPlayers = (int)advertiseMaxPlayers;
+
+	int port = g_Win64MultiplayerPort;
+	if (port <= 0)
+	{
+		port = WIN64_NET_DEFAULT_PORT;
+	}
 	if (!WinsockNetLayer::IsActive())
 		WinsockNetLayer::HostGame(port);
 
 	const wchar_t *hostName = IQNet::m_player[0].m_gamertag;
 	unsigned int settings = app.GetGameHostOption(eGameHostOption_All);
-	WinsockNetLayer::StartAdvertising(port, hostName, settings, 0, 0, MINECRAFT_NET_VERSION);
+	WinsockNetLayer::StartAdvertising(port, hostName, settings, 0, 0, MINECRAFT_NET_VERSION, advertiseMaxPlayers);
+	UpdateAndSetGameSessionData();
 #endif
 }
 
@@ -401,6 +509,9 @@ int CPlatformNetworkManagerStub::JoinGame(FriendSessionInfo *searchResult, int l
 	if (!WinsockNetLayer::JoinGame(hostIP, hostPort))
 	{
 		app.DebugPrintf("Win64 LAN: Failed to connect to %s:%d\n", hostIP, hostPort);
+		// Reset transient join state so a failed attempt does not poison subsequent joins.
+		m_pIQNet->EndGame();
+		WinsockNetLayer::StartDiscovery();
 		return CGameNetworkManager::JOINGAME_FAIL_GENERAL;
 	}
 
@@ -481,44 +592,40 @@ bool CPlatformNetworkManagerStub::_RunNetworkGame()
 
 void CPlatformNetworkManagerStub::UpdateAndSetGameSessionData(INetworkPlayer *pNetworkPlayerLeaving /*= NULL*/)
 {
-// 	DWORD playerCount = m_pIQNet->GetPlayerCount();
-// 
-// 	if( this->m_bLeavingGame )
-// 		return;
-// 
-// 	if( GetHostPlayer() == NULL )
-// 		return;
-// 
-// 	for(unsigned int i = 0; i < MINECRAFT_NET_MAX_PLAYERS; ++i)
-// 	{
-// 		if( i < playerCount )
-// 		{
-// 			INetworkPlayer *pNetworkPlayer = GetPlayerByIndex(i);
-// 
-// 			// We can call this from NotifyPlayerLeaving but at that point the player is still considered in the session
-// 			if( pNetworkPlayer != pNetworkPlayerLeaving )
-// 			{
-// 				m_hostGameSessionData.players[i] = ((NetworkPlayerXbox *)pNetworkPlayer)->GetUID();
-// 
-// 				char *temp;
-// 				temp = (char *)wstringtofilename( pNetworkPlayer->GetOnlineName() );
-// 				memcpy(m_hostGameSessionData.szPlayers[i],temp,XUSER_NAME_SIZE);
-// 			}
-// 			else
-// 			{
-// 				m_hostGameSessionData.players[i] = NULL;
-// 				memset(m_hostGameSessionData.szPlayers[i],0,XUSER_NAME_SIZE);
-// 			}
-// 		}
-// 		else
-// 		{
-// 			m_hostGameSessionData.players[i] = NULL;
-// 			memset(m_hostGameSessionData.szPlayers[i],0,XUSER_NAME_SIZE);
-// 		}
-// 	}
-// 
-// 	m_hostGameSessionData.hostPlayerUID = ((NetworkPlayerXbox *)GetHostPlayer())->GetQNetPlayer()->GetXuid();
-// 	m_hostGameSessionData.m_uiGameHostSettings = app.GetGameHostOption(eGameHostOption_All);
+#ifdef _WINDOWS64
+	if (this->m_bLeavingGame || !m_pIQNet->IsHost() || !WinsockNetLayer::IsHosting())
+	{
+		return;
+	}
+
+	BYTE advertisedCount = (BYTE)m_pIQNet->GetPlayerCount();
+	if (g_Win64DedicatedServerMode && advertisedCount > 0)
+	{
+		// Dedicated host keeps slot 0 active internally for network scheduling,
+		// but should not be shown as an in-game player in server browser counts.
+		--advertisedCount;
+	}
+	if (pNetworkPlayerLeaving != NULL && advertisedCount > 0)
+	{
+		--advertisedCount;
+	}
+	if (advertisedCount == 0 && !g_Win64DedicatedServerMode)
+	{
+		advertisedCount = 1;
+	}
+
+	extern QNET_STATE _iQNetStubState;
+	const BYTE maxPlayers = WinsockNetLayer::GetMaxPlayers();
+	const bool joinable = (_iQNetStubState == QNET_STATE_GAME_PLAY) && (advertisedCount < maxPlayers);
+	const unsigned int advertisedSettings = app.GetGameHostOption(eGameHostOption_All);
+
+	WinsockNetLayer::UpdateAdvertiseGameSettings(advertisedSettings);
+	WinsockNetLayer::UpdateAdvertisePlayerCount(advertisedCount);
+	WinsockNetLayer::UpdateAdvertiseJoinable(joinable);
+
+	app.DebugPrintf("Win64 LAN: Updated advertised session data (players=%d, joinable=%d, settings=0x%08X)\n",
+		(int)advertisedCount, joinable ? 1 : 0, advertisedSettings);
+#endif
 }
 
 int CPlatformNetworkManagerStub::RemovePlayerOnSocketClosedThreadProc( void* lpParam )
@@ -806,12 +913,102 @@ INetworkPlayer *CPlatformNetworkManagerStub::GetPlayerByIndex(int playerIndex)
 
 INetworkPlayer * CPlatformNetworkManagerStub::GetPlayerByXuid(PlayerUID xuid)
 {
-	return getNetworkPlayer( m_pIQNet->GetPlayerByXuid(xuid)) ;
+	IQNetPlayer *qnetPlayer = m_pIQNet->GetPlayerByXuid(xuid);
+
+#ifdef _WINDOWS64
+	if (qnetPlayer == NULL)
+	{
+		const unsigned __int64 kWin64StubXuidBase = 0xe000d45248242f2eULL;
+		const unsigned __int64 uxuid = (unsigned __int64)xuid;
+		if (uxuid >= kWin64StubXuidBase)
+		{
+			const unsigned __int64 delta = uxuid - kWin64StubXuidBase;
+			if (delta < (unsigned __int64)MINECRAFT_NET_MAX_PLAYERS)
+			{
+				const BYTE smallId = (BYTE)delta;
+				// Clients can legitimately resolve remote players by XUID before the
+				// platform join callback has materialized the slot's NetworkPlayer.
+				// Hosts keep the stricter check to avoid creating phantom entries.
+				const bool slotActive = (!m_pIQNet->IsHost()) ||
+					(smallId == 0) ||
+					(IQNet::m_player[smallId].GetCustomDataValue() != 0);
+				if (slotActive)
+				{
+					qnetPlayer = &IQNet::m_player[smallId];
+					qnetPlayer->m_smallId = smallId;
+					if (smallId == 0)
+					{
+						qnetPlayer->m_isHostPlayer = true;
+						qnetPlayer->m_isRemote = !m_pIQNet->IsHost();
+					}
+					else
+					{
+						const BYTE localSmallId = WinsockNetLayer::GetLocalSmallId();
+						const bool isLocalSlot = (!m_pIQNet->IsHost() && (smallId == localSmallId));
+						qnetPlayer->m_isHostPlayer = false;
+						qnetPlayer->m_isRemote = !isLocalSlot;
+					}
+					if (smallId >= IQNet::s_playerCount)
+					{
+						IQNet::s_playerCount = smallId + 1;
+					}
+					app.DebugPrintf("Win64 LAN: Materialized player slot from XUID (smallId=%u, isRemote=%d)\n",
+						(unsigned int)smallId,
+						qnetPlayer->m_isRemote ? 1 : 0);
+				}
+			}
+		}
+	}
+#endif
+
+	if (qnetPlayer == NULL)
+	{
+		return NULL;
+	}
+
+	INetworkPlayer *networkPlayer = getNetworkPlayer(qnetPlayer);
+#ifdef _WINDOWS64
+	if (networkPlayer == NULL)
+	{
+		NotifyPlayerJoined(qnetPlayer);
+		networkPlayer = getNetworkPlayer(qnetPlayer);
+		app.DebugPrintf("Win64 LAN: Lazily created network player from XUID (smallId=%u)\n",
+			(unsigned int)qnetPlayer->GetSmallId());
+	}
+#endif
+	return networkPlayer;
 }
 
 INetworkPlayer * CPlatformNetworkManagerStub::GetPlayerBySmallId(unsigned char smallId)
 {
-	return getNetworkPlayer(m_pIQNet->GetPlayerBySmallId(smallId));
+	IQNetPlayer *qnetPlayer = m_pIQNet->GetPlayerBySmallId(smallId);
+	if (qnetPlayer == NULL)
+	{
+		return NULL;
+	}
+
+	INetworkPlayer *networkPlayer = getNetworkPlayer(qnetPlayer);
+#ifdef _WINDOWS64
+	if (networkPlayer == NULL && smallId != 0 && !m_pIQNet->IsHost())
+	{
+		const BYTE localSmallId = WinsockNetLayer::GetLocalSmallId();
+		const bool isLocalSlot = (smallId == localSmallId);
+		qnetPlayer->m_smallId = smallId;
+		qnetPlayer->m_isHostPlayer = false;
+		qnetPlayer->m_isRemote = !isLocalSlot;
+		if (smallId >= IQNet::s_playerCount)
+		{
+			IQNet::s_playerCount = smallId + 1;
+		}
+
+		// On Win64 clients we may receive player/entity packets for remote users before a
+		// platform-layer "player joined" callback has been issued for that slot.
+		NotifyPlayerJoined(qnetPlayer);
+		networkPlayer = getNetworkPlayer(qnetPlayer);
+		app.DebugPrintf("Win64 LAN: Lazily created network player for smallId=%u\n", (unsigned int)smallId);
+	}
+#endif
+	return networkPlayer;
 }
 
 INetworkPlayer *CPlatformNetworkManagerStub::GetHostPlayer()
@@ -857,3 +1054,39 @@ bool CPlatformNetworkManagerStub::IsReadyToPlayOrIdle()
 {
 	return true;
 }
+
+#ifdef _WINDOWS64
+void CPlatformNetworkManagerStub::QueueServerTransfer(const char *hostIp, int hostPort)
+{
+	if (hostIp == NULL || hostIp[0] == 0 || hostPort <= 0)
+	{
+		return;
+	}
+
+	strncpy_s(m_transferHostIp, sizeof(m_transferHostIp), hostIp, _TRUNCATE);
+	m_transferHostPort = hostPort;
+	m_bTransferPending = true;
+	m_bTransferLeaving = false;
+	m_transferSuppressErrorsUntilMs = GetNowMs64() + 10000ULL;
+
+	app.DebugPrintf("Win64 LAN: Queued server transfer target %s:%d\n", m_transferHostIp, m_transferHostPort);
+}
+
+void CPlatformNetworkManagerStub::RequestServerTransfer(const char *hostIp, int hostPort)
+{
+	if (g_pPlatformNetworkManager == NULL)
+	{
+		return;
+	}
+
+	g_pPlatformNetworkManager->QueueServerTransfer(hostIp, hostPort);
+}
+
+bool CPlatformNetworkManagerStub::IsServerTransferInProgress()
+{
+	return (g_pPlatformNetworkManager != NULL) &&
+		(g_pPlatformNetworkManager->m_bTransferPending ||
+		 g_pPlatformNetworkManager->m_bTransferLeaving ||
+		 (GetNowMs64() < g_pPlatformNetworkManager->m_transferSuppressErrorsUntilMs));
+}
+#endif

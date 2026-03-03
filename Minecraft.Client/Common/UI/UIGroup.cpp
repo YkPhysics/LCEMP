@@ -12,6 +12,7 @@ UIGroup::UIGroup(EUIGroup group, int iPad)
 	m_bIgnorePlayerJoinMenuDisplayed = false;
 
 	m_updateFocusStateCountdown = 0;
+	m_viewportType = C4JRender::VIEWPORT_TYPE_FULLSCREEN;
 
 	for(unsigned int i = 0; i < eUILayer_COUNT; ++i)
 	{
@@ -31,15 +32,11 @@ UIGroup::UIGroup(EUIGroup group, int iPad)
 		m_tutorialPopup = (UIComponent_TutorialPopup *)m_layers[(int)eUILayer_Popup]->addComponent(m_iPad, eUIComponent_TutorialPopup);
 
 		m_hud = (UIScene_HUD *)m_layers[(int)eUILayer_HUD]->addComponent(m_iPad, eUIScene_HUD);
-
-		//m_layers[(int)eUILayer_Chat]->addComponent(m_iPad, eUIComponent_Chat);
 	}
 	else
 	{
 		m_pressStartToPlay = (UIComponent_PressStartToPlay *)m_layers[(int)eUILayer_Tooltips]->addComponent(0, eUIComponent_PressStartToPlay);
 	}
-
-	m_viewportType = C4JRender::VIEWPORT_TYPE_FULLSCREEN;
 
 	// 4J Stu - Pre-allocate this for cached rendering in scenes. It's horribly slow to do dynamically, but we should only need one
 	// per group as we will only be displaying one of these types of scenes at a time
@@ -419,3 +416,4 @@ UIScene *UIGroup::FindScene(EUIScene sceneType)
 
 	return pScene;
 }
+

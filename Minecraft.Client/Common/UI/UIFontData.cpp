@@ -148,24 +148,41 @@ CFontData::CFontData()
 	m_sFontData = NULL;
 	m_kerningTable = NULL;
 	m_pbRawImage = NULL;
+	m_pfAdvanceTable = NULL;
 }
 
 CFontData::CFontData(SFontData &sFontData, int *pbRawImage)
 	: m_unicodeMap( sFontData.m_uiGlyphCount + 2 )
 {
 	this->m_sFontData = &sFontData;
+	m_kerningTable = NULL;
+	m_pbRawImage = NULL;
+	m_pfAdvanceTable = NULL;
 
 	// INITIALISE ALPHA CHANNEL //
 
 	// Glyph Archive (1Byte per pixel).
 	unsigned int archiveSize = sFontData.m_uiGlyphMapX * sFontData.m_uiGlyphMapY; 
+	if (archiveSize == 0)
+	{
+		app.DebugPrintf("CFontData: invalid archive size for '%s'\n", sFontData.m_strFontName.c_str());
+		return;
+	}
 	
 	this->m_pbRawImage = new unsigned char[archiveSize];
 
-	// 4J-JEV: Take the alpha channel from each pixel.
-	for (unsigned int i = 0; i < archiveSize; i++)
+	if (pbRawImage == NULL)
 	{
-		this->m_pbRawImage[i] = (pbRawImage[i] & 0xFF000000) >> 24;
+		app.DebugPrintf("CFontData: raw font image missing for '%s', using blank fallback\n", sFontData.m_strFontName.c_str());
+		memset(this->m_pbRawImage, 0, archiveSize);
+	}
+	else
+	{
+		// 4J-JEV: Take the alpha channel from each pixel.
+		for (unsigned int i = 0; i < archiveSize; i++)
+		{
+			this->m_pbRawImage[i] = (pbRawImage[i] & 0xFF000000) >> 24;
+		}
 	}
 
 	// CREATE UNICODE MAP //
@@ -267,10 +284,17 @@ void CFontData::release()
 	delete [] m_kerningTable;
 	delete [] m_pfAdvanceTable;
 	delete [] m_pbRawImage;
+	m_kerningTable = NULL;
+	m_pfAdvanceTable = NULL;
+	m_pbRawImage = NULL;
 }
 
 const string CFontData::getFontName()
 {
+	if (m_sFontData == NULL)
+	{
+		return "";
+	}
 	return m_sFontData->m_strFontName;
 }
 
@@ -289,11 +313,19 @@ unsigned short CFontData::getGlyphId(unsigned int unicodepoint)
 
 unsigned int CFontData::getUnicode(unsigned short glyphId)
 {
+	if (m_sFontData == NULL || glyphId >= m_sFontData->m_uiGlyphCount)
+	{
+		return 0;
+	}
 	return m_sFontData->Codepoints[glyphId];
 }
 
 unsigned char *CFontData::topLeftPixel(int row, int col)
 {
+	if (m_pbRawImage == NULL || m_sFontData == NULL)
+	{
+		return NULL;
+	}
 	unsigned char *out = m_pbRawImage;
 	moveCursor(out, col * m_sFontData->m_uiGlyphWidth, row* m_sFontData->m_uiGlyphHeight);
 	return out;
@@ -301,22 +333,40 @@ unsigned char *CFontData::topLeftPixel(int row, int col)
 
 void CFontData::getPos(unsigned short glyphId, int &rowOut, int &colOut)
 {
+	if (m_sFontData == NULL || m_sFontData->m_uiGlyphMapCols == 0)
+	{
+		rowOut = 0;
+		colOut = 0;
+		return;
+	}
 	rowOut = glyphId / m_sFontData->m_uiGlyphMapCols;
 	colOut = glyphId % m_sFontData->m_uiGlyphMapCols;
 }
 
 float CFontData::getAdvance(unsigned short glyphId)
 {
+	if (m_pfAdvanceTable == NULL || m_sFontData == NULL || glyphId >= m_sFontData->m_uiGlyphCount)
+	{
+		return 0.0f;
+	}
 	return m_pfAdvanceTable[glyphId];
 }
 
 int CFontData::getWidth(unsigned short glyphId)
 {
+	if (m_kerningTable == NULL || m_sFontData == NULL || glyphId >= m_sFontData->m_uiGlyphCount)
+	{
+		return 0;
+	}
 	return m_kerningTable[glyphId];
 }
 
 bool CFontData::glyphIsWhitespace(unsigned short glyphId)
 {
+	if (m_sFontData == NULL || glyphId >= m_sFontData->m_uiGlyphCount)
+	{
+		return true;
+	}
 	return unicodeIsWhitespace( getUnicode(glyphId) );
 }
 
@@ -337,5 +387,9 @@ bool CFontData::unicodeIsWhitespace(unsigned int unicode)
 
 void CFontData::moveCursor(unsigned char *&cursor, unsigned int dx, unsigned int dy)
 {
+	if (m_sFontData == NULL || cursor == NULL)
+	{
+		return;
+	}
 	cursor += (dy * m_sFontData->m_uiGlyphMapX) + dx;
 }

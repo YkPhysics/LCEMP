@@ -6,6 +6,9 @@
 #include <assert.h>
 #include "..\..\Minecraft.h"
 #include "..\..\..\Minecraft.World\DisconnectPacket.h"
+#ifdef _WINDOWS64
+#include "..\Network\PlatformNetworkManagerStub.h"
+#endif
 
 //----------------------------------------------------------------------------------
 // Performs initialization tasks - retrieves controls.
@@ -143,6 +146,15 @@ HRESULT CScene_ConnectingProgress::OnTimer( XUIMessageTimer *pTimer, BOOL& bHand
 {
 	// Check if the connection failed
 	Minecraft *pMinecraft = Minecraft::GetInstance();
+
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		pMinecraft->m_connectionFailed[m_iPad] = false;
+		pMinecraft->m_connectionFailedReason[m_iPad] = DisconnectPacket::eDisconnect_None;
+		return S_OK;
+	}
+#endif
 
 	if( pMinecraft->m_connectionFailed[m_iPad] || !g_NetworkManager.IsInSession() )
 	{

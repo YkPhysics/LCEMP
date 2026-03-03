@@ -27,12 +27,58 @@
 #include "..\Minecraft.World\net.minecraft.world.h"
 #include "..\Minecraft.World\LevelChunk.h"
 #include "..\Minecraft.World\Biome.h"
+#include <algorithm>
+#include <cmath>
 
 #define RENDER_HUD 0
 //#ifndef _XBOX
 //#undef RENDER_HUD
 //#define RENDER_HUD 1
 //#endif
+
+namespace
+{
+	const unsigned int MINIGAME_SETTINGS_FLAG = 0x80000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_MASK = 0x70000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_SHIFT = 28u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_MASK = 0x0C000000u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_SHIFT = 26u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_MASK = 0x03000000u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_SHIFT = 24u;
+	const unsigned int MINIGAME_TYPE_BEDWARS = 3u;
+	const unsigned int MINIGAME_ROLE_HUB = 0u;
+
+	struct BedwarsHudRow
+	{
+		wstring name;
+		int health;
+		int distanceBlocks;
+		bool isSelf;
+	};
+
+	bool IsBedwarsSettings(unsigned int hostSettings)
+	{
+		if ((hostSettings & MINIGAME_SETTINGS_FLAG) == 0)
+		{
+			return false;
+		}
+		const unsigned int minigameType = (hostSettings & MINIGAME_SETTINGS_TYPE_MASK) >> MINIGAME_SETTINGS_TYPE_SHIFT;
+		return (minigameType == MINIGAME_TYPE_BEDWARS);
+	}
+
+	wstring GetBedwarsQueueLabel(unsigned int hostSettings)
+	{
+		const unsigned int queueMode = (hostSettings & MINIGAME_SETTINGS_QUEUE_MASK) >> MINIGAME_SETTINGS_QUEUE_SHIFT;
+		switch (queueMode)
+		{
+		case 0u: return L"Solo";
+		case 1u: return L"Doubles";
+		case 2u: return L"Squads";
+		case 3u: return L"Practice";
+		default: return L"Unknown";
+		}
+	}
+}
 
 float Gui::currentGuiBlendFactor = 1.0f;	// 4J added
 float Gui::currentGuiScaleFactor = 1.0f;	// 4J added
@@ -734,6 +780,91 @@ void Gui::render(float a, bool mouseFree, int xMouse, int yMouse)
 	// 4J - added to disable blends, which we have enabled previously to allow gui fading
 	glDisable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+	// Bedwars party/status panel (mid-right)
+	if (bDisplayGui && !bTwoPlayerSplitscreen && minecraft->level != NULL && minecraft->player != NULL)
+	{
+		const unsigned int hostSettings = app.GetGameHostOption(eGameHostOption_All);
+		if (IsBedwarsSettings(hostSettings))
+		{
+			vector<BedwarsHudRow> rows;
+			rows.reserve(minecraft->level->players.size());
+
+			for (AUTO_VAR(itP, minecraft->level->players.begin()); itP != minecraft->level->players.end(); ++itP)
+			{
+				shared_ptr<Player> p = *itP;
+				if (p == NULL)
+				{
+					continue;
+				}
+
+				BedwarsHudRow row;
+				row.name = p->displayName.empty() ? p->name : p->displayName;
+				row.health = p->getHealth();
+				const double dx = p->x - minecraft->player->x;
+				const double dy = p->y - minecraft->player->y;
+				const double dz = p->z - minecraft->player->z;
+				row.distanceBlocks = (int)std::sqrt(dx * dx + dy * dy + dz * dz);
+				row.isSelf = (p.get() == minecraft->player.get());
+				rows.push_back(row);
+			}
+
+			std::sort(rows.begin(), rows.end(), [](const BedwarsHudRow &a, const BedwarsHudRow &b)
+			{
+				if (a.isSelf != b.isSelf)
+				{
+					return a.isSelf;
+				}
+				if (a.distanceBlocks != b.distanceBlocks)
+				{
+					return a.distanceBlocks < b.distanceBlocks;
+				}
+				return a.name < b.name;
+			});
+
+			const int shownCount = (int)std::min<size_t>(rows.size(), 6);
+			const int panelWidth = 144;
+			const int headerHeight = 12;
+			const int lineHeight = 9;
+			const int bodyTop = headerHeight + 12;
+			const int bodyHeight = shownCount * lineHeight;
+			const int footerHeight = 10;
+			const int panelHeight = bodyTop + bodyHeight + footerHeight;
+			const int panelX = screenWidth - panelWidth - 2;
+			const int panelY = (screenHeight / 2) - (panelHeight / 2);
+
+			fill(panelX - 1, panelY - 1, panelX + panelWidth + 1, panelY + panelHeight + 1, 0xA0101010);
+			fill(panelX, panelY, panelX + panelWidth, panelY + headerHeight, 0xB0303030);
+			fill(panelX, panelY + headerHeight, panelX + panelWidth, panelY + panelHeight, 0x70101010);
+
+			drawString(font, L"Party", panelX + 3, panelY + 2, 0x55FFFF);
+
+			const bool isHubRole = (((hostSettings & MINIGAME_SETTINGS_ROLE_MASK) >> MINIGAME_SETTINGS_ROLE_SHIFT) == MINIGAME_ROLE_HUB);
+			const wstring modeText = isHubRole ? L"Hub" : L"Match";
+			const wstring queueText = GetBedwarsQueueLabel(hostSettings);
+			wchar_t infoLine[96];
+			swprintf_s(infoLine, L"%ls | %ls | %d online", modeText.c_str(), queueText.c_str(), (int)rows.size());
+			drawString(font, infoLine, panelX + 3, panelY + headerHeight + 1, 0xCFCFCF);
+
+			for (int i = 0; i < shownCount; ++i)
+			{
+				const BedwarsHudRow &r = rows[(size_t)i];
+				const int y = panelY + bodyTop + i * lineHeight;
+				const int nameColor = r.isSelf ? 0xFFFF55 : 0xE0E0E0;
+				drawString(font, r.name, panelX + 3, y, nameColor);
+
+				wchar_t rightText[48];
+				const int clampedHp = (r.health < 0) ? 0 : r.health;
+				swprintf_s(rightText, L"%dHP %dm", clampedHp, r.distanceBlocks);
+				int hpColor = 0x55FF55;
+				if (clampedHp <= 10) hpColor = 0xFFAA55;
+				if (clampedHp <= 4) hpColor = 0xFF5555;
+				drawString(font, rightText, panelX + panelWidth - font->width(rightText) - 3, y, hpColor);
+			}
+
+			drawString(font, L"/party /queue", panelX + 3, panelY + panelHeight - 9, 0x909090);
+		}
+	}
 
     // if the player is falling asleep we render a dark overlay
     if (minecraft->player->getSleepTimer() > 0)

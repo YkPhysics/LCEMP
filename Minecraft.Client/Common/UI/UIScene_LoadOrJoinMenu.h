@@ -42,6 +42,15 @@ private:
 	};
 	eActions m_eAction;
 
+	enum EMinigameButtons
+	{
+		eMinigame_Battle = 0,
+		eMinigame_Tumble,
+		eMinigame_Glide,
+		eMinigame_Bedwars,
+		eMinigame_Count,
+	};
+
 	static const int JOIN_LOAD_CREATE_BUTTON_INDEX = 0;
 
 	SaveListDetails *m_saveDetails;
@@ -85,6 +94,7 @@ private:
 	bool m_bAllLoaded;
 	bool m_bRetrievingSaveThumbnails;
 	bool m_bSaveThumbnailReady;
+	bool m_bMinigamesMode;
 	bool m_bShowingPartyGamesOnly;
 	bool m_bInParty;
 	JoinMenuInitData *m_initData;
@@ -105,6 +115,7 @@ private:
 	bool m_bSaveTransferCancelled;
 #endif
 	bool m_bUpdateSaveSize;
+	FriendSessionInfo *m_pDirectConnectSession;
 
 public:
 	UIScene_LoadOrJoinMenu(int iPad, void *initData, UILayer *parentLayer);
@@ -132,6 +143,7 @@ public:
 
 private:
 	void Initialise();
+	void InitialiseMinigamesMode();
 	void GetSaveInfo();
 	void UpdateGamesList();
 	void AddDefaultButtons();
@@ -153,8 +165,15 @@ public:
 	static int DeleteSaveDataReturned(LPVOID lpParam,bool bRes);
 	static int RenameSaveDataReturned(LPVOID lpParam,bool bRes);
 	static int KeyboardCompleteWorldNameCallback(LPVOID lpParam,bool bRes);
+	static int KeyboardCompleteDirectConnectCallback(LPVOID lpParam,bool bRes);
 protected:
 	void handlePress(F64 controlId, F64 childId);
+	void StartMinigameServer(int minigameIndex);
+	void StartDirectConnectKeyboard();
+	void HandleDirectConnectInput(const wchar_t *inputText);
+#ifdef _WINDOWS64
+	bool ParseDirectConnectAddress(const wchar_t *inputText, char *outHostIp, size_t outHostIpSize, int &outHostPort);
+#endif
 	void LoadLevelGen(LevelGenerationOptions *levelGen);
 	void LoadSaveFromDisk(File *saveFile, ESavePlatform savePlatform = SAVE_FILE_PLATFORM_LOCAL);
 #if defined(__PS3__) || defined(__PSVITA__) || defined(__ORBIS__)

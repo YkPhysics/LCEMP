@@ -1,8 +1,10 @@
 #include "stdafx.h"
 #include "UI.h"
 #include "UIScene_LoadOrJoinMenu.h"
+#include <cwctype>
 
 #include "..\..\..\Minecraft.World\StringHelpers.h"
+#include "..\..\..\Minecraft.World\LevelSettings.h"
 #include "..\..\..\Minecraft.World\net.minecraft.world.item.h"
 #include "..\..\..\Minecraft.World\net.minecraft.world.level.h"
 #include "..\..\..\Minecraft.World\net.minecraft.world.level.chunk.storage.h"
@@ -11,9 +13,14 @@
 #include "..\..\..\Minecraft.World\ConsoleSaveFileSplit.h"
 #include "..\..\ProgressRenderer.h"
 #include "..\..\MinecraftServer.h"
+#include "..\..\User.h"
+#include "..\..\Options.h"
 #include "..\..\TexturePackRepository.h"
 #include "..\..\TexturePack.h"
 #include "..\Network\SessionInfo.h"
+#ifdef _WINDOWS64
+#include "..\..\Windows64\Network\WinsockNetLayer.h"
+#endif
 #if defined(__PS3__) || defined(__ORBIS__) || defined(__PSVITA__)
 #include "Common\Network\Sony\SonyHttp.h"
 #include "Common\Network\Sony\SonyRemoteStorage.h"
@@ -24,6 +31,79 @@
 #ifdef __PSVITA__
 #include "message_dialog.h"
 #endif
+
+namespace
+{
+	// Custom, Windows64-only metadata packed into the host settings bitfield so LAN browser rows
+	// can show the selected LCE minigame type.
+	const unsigned int MINIGAME_SETTINGS_FLAG = 0x80000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_MASK = 0x70000000u;
+	const unsigned int MINIGAME_SETTINGS_TYPE_SHIFT = 28u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_MASK = 0x0C000000u;
+	const unsigned int MINIGAME_SETTINGS_ROLE_SHIFT = 26u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_MASK = 0x03000000u;
+	const unsigned int MINIGAME_SETTINGS_QUEUE_SHIFT = 24u;
+	const unsigned int MINIGAME_ROLE_HUB = 0u;
+	const unsigned int MINIGAME_ROLE_MATCH = 1u;
+
+	const wchar_t *GetQueueLabelFromSettings(unsigned int gameHostSettings)
+	{
+		const unsigned int queueMode = (gameHostSettings & MINIGAME_SETTINGS_QUEUE_MASK) >> MINIGAME_SETTINGS_QUEUE_SHIFT;
+		switch(queueMode)
+		{
+		case 0: return L"Solo";
+		case 1: return L"Doubles";
+		case 2: return L"Squads";
+		case 3: return L"Practice";
+		default: return L"Unknown";
+		}
+	}
+
+	const wchar_t *GetMinigameNameFromSettings(unsigned int gameHostSettings)
+	{
+		if ((gameHostSettings & MINIGAME_SETTINGS_FLAG) == 0)
+		{
+			return L"Unknown";
+		}
+
+		const unsigned int minigameIndex = (gameHostSettings & MINIGAME_SETTINGS_TYPE_MASK) >> MINIGAME_SETTINGS_TYPE_SHIFT;
+		switch(minigameIndex)
+		{
+		case 0: return L"Battle";
+		case 1: return L"Tumble";
+		case 2: return L"Glide";
+		case 3:
+			{
+				const unsigned int role = (gameHostSettings & MINIGAME_SETTINGS_ROLE_MASK) >> MINIGAME_SETTINGS_ROLE_SHIFT;
+				if (role == MINIGAME_ROLE_MATCH)
+				{
+					static wchar_t bedwarsMatchLabel[64];
+					swprintf_s(bedwarsMatchLabel, 64, L"Bedwars %ls Match", GetQueueLabelFromSettings(gameHostSettings));
+					return bedwarsMatchLabel;
+				}
+				return L"Bedwars Hub";
+			}
+		default: return L"Unknown";
+		}
+	}
+
+	wstring TrimWhitespace(const wstring &input)
+	{
+		size_t first = 0;
+		while(first < input.length() && std::iswspace(input[first]))
+		{
+			++first;
+		}
+
+		size_t last = input.length();
+		while(last > first && std::iswspace(input[last - 1]))
+		{
+			--last;
+		}
+
+		return input.substr(first, last - first);
+	}
+}
 
 
 #ifdef SONY_REMOTE_STORAGE_DOWNLOAD
@@ -119,6 +199,7 @@ UIScene_LoadOrJoinMenu::UIScene_LoadOrJoinMenu(int iPad, void *initData, UILayer
     m_bAllLoaded = false;
     m_bRetrievingSaveThumbnails = false;
     m_bSaveThumbnailReady = false;
+    m_bMinigamesMode = false;
     m_bExitScene=false;
     m_pSaveDetails=NULL;
     m_bSavesDisplayed=false;
@@ -133,6 +214,22 @@ UIScene_LoadOrJoinMenu::UIScene_LoadOrJoinMenu(int iPad, void *initData, UILayer
     m_bSaveTransferInProgress=false;
 #endif
 	m_eAction = eAction_None;
+    m_pDirectConnectSession = NULL;
+
+    LoadOrJoinMenuInitData *loadOrJoinInit = (LoadOrJoinMenuInitData *)initData;
+    if(loadOrJoinInit != NULL &&
+       loadOrJoinInit->magic == LOAD_OR_JOIN_MENU_INIT_MAGIC &&
+       loadOrJoinInit->bMinigamesMode)
+    {
+        m_bMinigamesMode = true;
+    }
+
+    if(m_bMinigamesMode)
+    {
+        m_labelSavesListTitle.init(L"Create Minigame Server");
+        m_labelJoinListTitle.init(L"Server Browser");
+        m_labelNoGames.init(L"No servers found");
+    }
 
     m_bMultiplayerAllowed = ProfileManager.IsSignedInLive( m_iPad ) && ProfileManager.AllowedToPlayMultiplayer(m_iPad);
 
@@ -164,7 +261,11 @@ UIScene_LoadOrJoinMenu::UIScene_LoadOrJoinMenu(int iPad, void *initData, UILayer
 #endif
 
     // block input if we're waiting for DLC to install, and wipe the saves list. The end of dlc mounting custom message will fill the list again
-    if(app.StartInstallDLCProcess(m_iPad)==true || app.DLCInstallPending())
+    if(m_bMinigamesMode)
+    {
+        Initialise();
+    }
+    else if(app.StartInstallDLCProcess(m_iPad)==true || app.DLCInstallPending())
     {
         // if we're waiting for DLC to mount, don't fill the save list. The custom message on end of dlc mounting will do that
         m_bIgnoreInput = true;
@@ -192,7 +293,7 @@ UIScene_LoadOrJoinMenu::UIScene_LoadOrJoinMenu(int iPad, void *initData, UILayer
     MinecraftServer::resetFlags();
 
     // If we're not ignoring input, then we aren't still waiting for the DLC to mount, and can now check for corrupt dlc. Otherwise this will happen when the dlc has finished mounting.
-    if( !m_bIgnoreInput)
+    if( !m_bIgnoreInput && !m_bMinigamesMode)
     {
         app.m_dlcManager.checkForCorruptDLCAndAlert();
     }
@@ -299,10 +400,24 @@ UIScene_LoadOrJoinMenu::~UIScene_LoadOrJoinMenu()
         }
         delete [] m_saveDetails;
     }
+
+    delete m_pDirectConnectSession;
+    m_pDirectConnectSession = NULL;
 }
 
 void UIScene_LoadOrJoinMenu::updateTooltips()
 {
+    if(m_bMinigamesMode)
+    {
+        int iY = -1;
+        if(DoesGamesListHaveFocus() && m_buttonListGames.getItemCount() > 0)
+        {
+            iY = IDS_TOOLTIPS_VIEW_GAMERCARD;
+        }
+        ui.SetTooltips( DEFAULT_XUI_MENU_USER, IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK, -1, iY);
+        return;
+    }
+
     // update the tooltips
     // if the saves list has focus, then we should show the Delete Save tooltip
     // if the games list has focus, then we should the the View Gamercard tooltip
@@ -391,6 +506,12 @@ void UIScene_LoadOrJoinMenu::updateTooltips()
 // 
 void UIScene_LoadOrJoinMenu::Initialise()
 {
+    if(m_bMinigamesMode)
+    {
+        InitialiseMinigamesMode();
+        return;
+    }
+
     m_iSaveListIndex = 0;
 	m_iGameListIndex = 0;
 
@@ -445,6 +566,35 @@ void UIScene_LoadOrJoinMenu::Initialise()
     app.m_dlcManager.checkForCorruptDLCAndAlert();
 }
 
+void UIScene_LoadOrJoinMenu::InitialiseMinigamesMode()
+{
+    app.DebugPrintf("UIScene_LoadOrJoinMenu::InitialiseMinigamesMode\n");
+
+    m_iSaveListIndex = 0;
+    m_iGameListIndex = 0;
+    m_iDefaultButtonsC = 0;
+    m_iMashUpButtonsC = 0;
+    m_generators.clear();
+
+    m_buttonListSaves.clearList();
+    m_buttonListSaves.addItem(L"Battle");
+    m_buttonListSaves.addItem(L"Tumble");
+    m_buttonListSaves.addItem(L"Glide");
+    m_buttonListSaves.addItem(L"Bedwars");
+    m_buttonListSaves.addItem(L"Direct Connect");
+
+    m_iDefaultButtonsC = m_buttonListSaves.getItemCount();
+    m_controlSavesTimer.setVisible(false);
+    m_labelNoGames.setVisible(false);
+
+    m_iRequestingThumbnailId = 0;
+    m_bAllLoaded = true;
+    m_bSavesDisplayed = true;
+    m_bRetrievingSaveThumbnails = false;
+    m_bSaveThumbnailReady = false;
+    m_bIgnoreInput = false;
+}
+
 void UIScene_LoadOrJoinMenu::updateComponents()
 {
     m_parentLayer->showComponent(m_iPad,eUIComponent_Panorama,true);
@@ -471,6 +621,16 @@ void UIScene_LoadOrJoinMenu::handleGainFocus(bool navBack)
 
     // Add load online timer
     addTimer(JOIN_LOAD_ONLINE_TIMER_ID,JOIN_LOAD_ONLINE_TIMER_TIME);
+
+    if(m_bMinigamesMode)
+    {
+        if(navBack)
+        {
+            m_bIgnoreInput = false;
+            UpdateGamesList();
+        }
+        return;
+    }
 
     if(navBack)
     {
@@ -962,6 +1122,15 @@ void UIScene_LoadOrJoinMenu::handleInput(int iPad, int key, bool repeat, bool pr
         }
         break;
     case ACTION_MENU_X:
+        if(m_bMinigamesMode)
+        {
+            if(pressed)
+            {
+                StartDirectConnectKeyboard();
+                handled = true;
+            }
+            break;
+        }
 #if TO_BE_IMPLEMENTED
         // Change device
         // Fix for #12531 - TCR 001: BAS Game Stability: When a player selects to change a storage 
@@ -1041,6 +1210,10 @@ void UIScene_LoadOrJoinMenu::handleInput(int iPad, int key, bool repeat, bool pr
         break;
 
     case ACTION_MENU_RIGHT_SCROLL:
+        if(m_bMinigamesMode)
+        {
+            break;
+        }
         if(DoesSavesListHaveFocus())
         {
             // 4J-PB - check we are on a valid save
@@ -1194,6 +1367,139 @@ int UIScene_LoadOrJoinMenu::KeyboardCompleteWorldNameCallback(LPVOID lpParam,boo
 
     return 0;
 }
+
+void UIScene_LoadOrJoinMenu::StartDirectConnectKeyboard()
+{
+#ifdef _WINDOWS64
+    m_bIgnoreInput = true;
+    ui.PlayUISFX(eSFX_Press);
+    InputManager.RequestKeyboard(L"Direct Connect", L"", (DWORD)m_iPad, 63, &UIScene_LoadOrJoinMenu::KeyboardCompleteDirectConnectCallback, this, C_4JInput::EKeyboardMode_Default);
+#else
+    UINT uiIDA[1];
+    uiIDA[0] = IDS_CONFIRM_OK;
+    ui.RequestMessageBox(IDS_ERROR_NETWORK_TITLE, IDS_ERROR_NETWORK, uiIDA, 1, m_iPad, NULL, NULL, app.GetStringTable());
+#endif
+}
+
+int UIScene_LoadOrJoinMenu::KeyboardCompleteDirectConnectCallback(LPVOID lpParam, bool bRes)
+{
+    UIScene_LoadOrJoinMenu *pClass = (UIScene_LoadOrJoinMenu *)lpParam;
+    pClass->m_bIgnoreInput = false;
+
+    if(!bRes)
+    {
+        pClass->updateTooltips();
+        return 0;
+    }
+
+    uint16_t ui16Text[128];
+    ZeroMemory(ui16Text, sizeof(ui16Text));
+    InputManager.GetText(ui16Text);
+    pClass->HandleDirectConnectInput((const wchar_t *)ui16Text);
+    return 0;
+}
+
+void UIScene_LoadOrJoinMenu::HandleDirectConnectInput(const wchar_t *inputText)
+{
+#ifdef _WINDOWS64
+    char hostIp[64];
+    int hostPort = WIN64_NET_DEFAULT_PORT;
+
+    if(!ParseDirectConnectAddress(inputText, hostIp, sizeof(hostIp), hostPort))
+    {
+        app.DebugPrintf("UIScene_LoadOrJoinMenu::HandleDirectConnectInput - invalid address input\n");
+        UINT uiIDA[1];
+        uiIDA[0] = IDS_CONFIRM_OK;
+        ui.RequestMessageBox(IDS_ERROR_NETWORK_TITLE, IDS_ERROR_NETWORK, uiIDA, 1, m_iPad, NULL, NULL, app.GetStringTable());
+        return;
+    }
+
+    delete m_pDirectConnectSession;
+    m_pDirectConnectSession = new FriendSessionInfo();
+
+    wstring label = TrimWhitespace(inputText != NULL ? inputText : L"");
+    if(label.length() == 0)
+    {
+        label = convStringToWstring(string(hostIp));
+    }
+
+    size_t labelLen = label.length();
+    m_pDirectConnectSession->displayLabel = new wchar_t[labelLen + 1];
+    wcscpy_s(m_pDirectConnectSession->displayLabel, labelLen + 1, label.c_str());
+    m_pDirectConnectSession->displayLabelLength = (unsigned char)((labelLen > 255) ? 255 : labelLen);
+    m_pDirectConnectSession->displayLabelViewableStartIndex = 0;
+    m_pDirectConnectSession->data.isJoinable = true;
+    m_pDirectConnectSession->data.isReadyToJoin = true;
+    m_pDirectConnectSession->data.hostPort = hostPort;
+    m_pDirectConnectSession->data.playerCount = 0;
+    m_pDirectConnectSession->data.maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+    strncpy_s(m_pDirectConnectSession->data.hostIP, sizeof(m_pDirectConnectSession->data.hostIP), hostIp, _TRUNCATE);
+
+    wstring hostName = convStringToWstring(string(hostIp));
+    wcsncpy_s(m_pDirectConnectSession->data.hostName, XUSER_NAME_SIZE, hostName.c_str(), _TRUNCATE);
+    m_pDirectConnectSession->sessionId = 0;
+
+    app.DebugPrintf("UIScene_LoadOrJoinMenu::HandleDirectConnectInput - joining %s:%d\n", hostIp, hostPort);
+
+    m_initData->iPad = 0;
+    m_initData->selectedSession = m_pDirectConnectSession;
+    m_controlJoinTimer.setVisible(false);
+
+    m_bIgnoreInput = true;
+    ui.NavigateToScene(ProfileManager.GetPrimaryPad(), eUIScene_JoinMenu, m_initData);
+#else
+    (void)inputText;
+#endif
+}
+
+#ifdef _WINDOWS64
+bool UIScene_LoadOrJoinMenu::ParseDirectConnectAddress(const wchar_t *inputText, char *outHostIp, size_t outHostIpSize, int &outHostPort)
+{
+    if(inputText == NULL || outHostIp == NULL || outHostIpSize == 0)
+    {
+        return false;
+    }
+
+    outHostIp[0] = '\0';
+    outHostPort = WIN64_NET_DEFAULT_PORT;
+
+    wstring trimmedInput = TrimWhitespace(inputText);
+    if(trimmedInput.length() == 0)
+    {
+        return false;
+    }
+
+    wstring hostPart = trimmedInput;
+    wstring portPart;
+    size_t separatorPos = trimmedInput.rfind(L':');
+    if(separatorPos != wstring::npos)
+    {
+        hostPart = TrimWhitespace(trimmedInput.substr(0, separatorPos));
+        portPart = TrimWhitespace(trimmedInput.substr(separatorPos + 1));
+        if(hostPart.length() == 0 || portPart.length() == 0)
+        {
+            return false;
+        }
+
+        int parsedPort = _wtoi(portPart.c_str());
+        if(parsedPort <= 0 || parsedPort > 65535)
+        {
+            return false;
+        }
+        outHostPort = parsedPort;
+    }
+
+    size_t convertedCount = 0;
+    errno_t convertResult = wcstombs_s(&convertedCount, outHostIp, outHostIpSize, hostPart.c_str(), _TRUNCATE);
+    if(convertResult != 0 || outHostIp[0] == '\0')
+    {
+        return false;
+    }
+
+    return true;
+}
+#endif
+
 void UIScene_LoadOrJoinMenu::handleInitFocus(F64 controlId, F64 childId)
 {
     app.DebugPrintf(app.USER_SR, "UIScene_LoadOrJoinMenu::handleInitFocus - %d , %d\n", (int)controlId, (int)childId);
@@ -1235,10 +1541,23 @@ void UIScene_LoadOrJoinMenu::handlePress(F64 controlId, F64 childId)
         {
             m_bIgnoreInput=true;
 
-            int lGenID = (int)childId - 1;
-
             //CD - Added for audio
             ui.PlayUISFX(eSFX_Press);
+
+            if(m_bMinigamesMode)
+            {
+                if((int)childId == (int)eMinigame_Count)
+                {
+                    StartDirectConnectKeyboard();
+                }
+                else
+                {
+                    StartMinigameServer((int)childId);
+                }
+                break;
+            }
+
+            int lGenID = (int)childId - 1;
 
             if((int)childId == JOIN_LOAD_CREATE_BUTTON_INDEX)
             {		
@@ -1354,8 +1673,10 @@ void UIScene_LoadOrJoinMenu::handlePress(F64 controlId, F64 childId)
 
 void UIScene_LoadOrJoinMenu::CheckAndJoinGame(int gameIndex)
 {
-	if( m_buttonListGames.getItemCount() > 0 && gameIndex < m_currentSessions->size() )
+	if( m_currentSessions != NULL && m_buttonListGames.getItemCount() > 0 && gameIndex >= 0 && gameIndex < (int)m_currentSessions->size() )
 	{
+		FriendSessionInfo *selectedSession = m_currentSessions->at(gameIndex);
+
 #if defined(__PS3__) || defined(__ORBIS__) || defined(__PSVITA__)
 		// 4J-PB - is the player allowed to join games?
 		bool noUGC=false;
@@ -1472,7 +1793,7 @@ void UIScene_LoadOrJoinMenu::CheckAndJoinGame(int gameIndex)
 
 		//CScene_MultiGameInfo::JoinMenuInitData *initData = new CScene_MultiGameInfo::JoinMenuInitData();
 		m_initData->iPad = 0;;
-		m_initData->selectedSession = m_currentSessions->at( gameIndex );
+		m_initData->selectedSession = selectedSession;
 
 		// check that we have the texture pack available
 		// If it's not the default texture pack
@@ -1524,6 +1845,165 @@ void UIScene_LoadOrJoinMenu::CheckAndJoinGame(int gameIndex)
 		m_bIgnoreInput=true;
 		ui.NavigateToScene(ProfileManager.GetPrimaryPad(),eUIScene_JoinMenu,m_initData);
 	}
+}
+
+void UIScene_LoadOrJoinMenu::StartMinigameServer(int minigameIndex)
+{
+    static const wchar_t *minigameNames[eMinigame_Count] =
+    {
+        L"Battle",
+        L"Tumble",
+        L"Glide",
+        L"Bedwars",
+    };
+
+    if(minigameIndex < 0 || minigameIndex >= (int)eMinigame_Count)
+    {
+        app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - invalid minigame index %d\n", minigameIndex);
+        m_bIgnoreInput = false;
+        return;
+    }
+
+    app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - selected %ls (%d)\n",
+        minigameNames[minigameIndex], minigameIndex);
+
+    int hostPad = m_iPad;
+    if(hostPad < 0 || !ProfileManager.IsSignedIn(hostPad))
+    {
+        hostPad = ProfileManager.GetPrimaryPad();
+    }
+
+    UINT uiIDA[1];
+    uiIDA[0] = IDS_OK;
+
+    if(hostPad < 0)
+    {
+        app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - no signed in host pad\n");
+        m_bIgnoreInput = false;
+        ui.RequestMessageBox(IDS_MUST_SIGN_IN_TITLE, IDS_MUST_SIGN_IN_TEXT, uiIDA, 1, m_iPad, NULL, NULL, app.GetStringTable());
+        return;
+    }
+
+    if(ProfileManager.IsGuest(hostPad))
+    {
+        app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - host pad %d is guest\n", hostPad);
+        m_bIgnoreInput = false;
+        ui.RequestMessageBox(IDS_PRO_GUESTPROFILE_TITLE, IDS_PRO_GUESTPROFILE_TEXT, uiIDA, 1);
+        return;
+    }
+
+    bool isClientSide = ProfileManager.IsSignedInLive(hostPad);
+#ifdef __PSVITA__
+    if(app.GetGameSettings(ProfileManager.GetPrimaryPad(),eGameSetting_PSVita_NetworkModeAdhoc) == true)
+    {
+        CGameNetworkManager::setAdhocMode(true);
+        isClientSide = SQRNetworkManager_AdHoc_Vita::GetAdhocStatus();
+    }
+    else
+    {
+        CGameNetworkManager::setAdhocMode(false);
+    }
+#endif
+
+    if(!isClientSide)
+    {
+        app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - host pad %d is offline\n", hostPad);
+        m_bIgnoreInput = false;
+        ui.RequestMessageBox(IDS_PRO_NOTONLINE_TITLE, IDS_PRO_NOTONLINE_TEXT, uiIDA, 1, hostPad, NULL, NULL, app.GetStringTable());
+        return;
+    }
+
+    Minecraft *pMinecraft = Minecraft::GetInstance();
+    ProfileManager.SetLockedProfile(hostPad);
+    ProfileManager.QuerySigninStatus();
+
+    pMinecraft->user->name = convStringToWstring(ProfileManager.GetGamertag(hostPad));
+    app.ApplyGameSettingsChanged(hostPad);
+
+    const bool launchingBedwarsHub = (minigameIndex == (int)eMinigame_Bedwars);
+    wstring saveTitle = L"LCE ";
+    saveTitle += launchingBedwarsHub ? L"Bedwars Hub" : minigameNames[minigameIndex];
+
+    app.ClearTerrainFeaturePosition();
+    StorageManager.ResetSaveData();
+    StorageManager.SetSaveTitle(saveTitle.c_str());
+
+    app.SetTutorialMode(false);
+    app.setLevelGenerationOptions(NULL);
+
+    int difficulty = 2;
+    if(pMinecraft->options != NULL)
+    {
+        difficulty = pMinecraft->options->difficulty;
+    }
+
+    app.SetGameHostOption(eGameHostOption_Difficulty, difficulty);
+    app.SetGameHostOption(eGameHostOption_FriendsOfFriends, 1);
+    app.SetGameHostOption(eGameHostOption_Gamertags, app.GetGameSettings(hostPad, eGameSetting_GamertagsVisible) ? 1 : 0);
+    app.SetGameHostOption(eGameHostOption_BedrockFog, app.GetGameSettings(hostPad, eGameSetting_BedrockFog) ? 1 : 0);
+
+    app.SetGameHostOption(eGameHostOption_GameType, GameType::SURVIVAL->getId());
+    app.SetGameHostOption(eGameHostOption_LevelType, 1);
+    app.SetGameHostOption(eGameHostOption_Structures, 0);
+    app.SetGameHostOption(eGameHostOption_BonusChest, 0);
+    app.SetGameHostOption(eGameHostOption_DisableSaving, 1);
+    StorageManager.SetSaveDisabled(true);
+
+    app.SetGameHostOption(eGameHostOption_PvP, launchingBedwarsHub ? 0 : 1);
+    app.SetGameHostOption(eGameHostOption_TrustPlayers, 0);
+    app.SetGameHostOption(eGameHostOption_FireSpreads, launchingBedwarsHub ? 0 : 1);
+    app.SetGameHostOption(eGameHostOption_TNT, launchingBedwarsHub ? 0 : 1);
+    app.SetGameHostOption(eGameHostOption_HostCanFly, 0);
+    app.SetGameHostOption(eGameHostOption_HostCanChangeHunger, 0);
+    app.SetGameHostOption(eGameHostOption_HostCanBeInvisible, 0);
+
+    // Tag the session with a minigame type so the server browser can show it.
+    unsigned int hostSettings = app.GetGameHostOption(eGameHostOption_All);
+    hostSettings |= MINIGAME_SETTINGS_FLAG;
+    hostSettings &= ~MINIGAME_SETTINGS_TYPE_MASK;
+    hostSettings |= ((unsigned int)(minigameIndex & 0x7) << MINIGAME_SETTINGS_TYPE_SHIFT);
+    hostSettings &= ~MINIGAME_SETTINGS_ROLE_MASK;
+    hostSettings |= (MINIGAME_ROLE_HUB << MINIGAME_SETTINGS_ROLE_SHIFT);
+    hostSettings &= ~MINIGAME_SETTINGS_QUEUE_MASK;
+    hostSettings |= (0u << MINIGAME_SETTINGS_QUEUE_SHIFT);
+    app.SetGameHostOption(eGameHostOption_All, hostSettings);
+
+    DWORD dwLocalUsersMask = CGameNetworkManager::GetLocalPlayerMask(hostPad);
+    if(dwLocalUsersMask == 0)
+    {
+        dwLocalUsersMask = CGameNetworkManager::GetLocalPlayerMask(ProfileManager.GetPrimaryPad());
+    }
+    g_NetworkManager.HostGame(dwLocalUsersMask, isClientSide, false, MINECRAFT_NET_MAX_PLAYERS, 0);
+    app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - HostGame called (mask=0x%08X)\n", dwLocalUsersMask);
+
+#ifndef _XBOX
+    g_NetworkManager.FakeLocalPlayerJoined();
+#endif
+
+    NetworkGameInitData *param = new NetworkGameInitData();
+    param->seed = 0;
+    param->findSeed = true;
+    param->saveData = NULL;
+    param->settings = app.GetGameHostOption(eGameHostOption_All);
+    param->texturePackId = pMinecraft->getCurrentTexturePackId();
+    param->xzSize = LEVEL_MAX_WIDTH;
+    param->hellScale = HELL_LEVEL_MAX_SCALE;
+
+    LoadingInputParams *loadingParams = new LoadingInputParams();
+    loadingParams->func = &CGameNetworkManager::RunNetworkGameThreadProc;
+    loadingParams->lpParam = (LPVOID)param;
+
+    app.SetAutosaveTimerTime();
+
+    UIFullscreenProgressCompletionData *completionData = new UIFullscreenProgressCompletionData();
+    completionData->bShowBackground = TRUE;
+    completionData->bShowLogo = TRUE;
+    completionData->type = e_ProgressCompletion_CloseAllPlayersUIScenes;
+    completionData->iPad = DEFAULT_XUI_MENU_USER;
+    loadingParams->completionData = completionData;
+
+    ui.NavigateToScene(hostPad, eUIScene_FullscreenProgress, loadingParams);
+    app.DebugPrintf("UIScene_LoadOrJoinMenu::StartMinigameServer - navigating to fullscreen progress\n");
 }
 
 void UIScene_LoadOrJoinMenu::LoadLevelGen(LevelGenerationOptions *levelGen)
@@ -1610,10 +2090,13 @@ void UIScene_LoadOrJoinMenu::UpdateGamesList()
 
 
     FriendSessionInfo *pSelectedSession = NULL;
-    if(DoesGamesListHaveFocus() && m_buttonListGames.getItemCount() > 0)
+    if(DoesGamesListHaveFocus() && m_buttonListGames.getItemCount() > 0 && m_currentSessions != NULL)
     {
         unsigned int nIndex = m_buttonListGames.getCurrentSelection();
-        pSelectedSession = m_currentSessions->at( nIndex );
+        if(nIndex < m_currentSessions->size())
+        {
+            pSelectedSession = m_currentSessions->at( nIndex );
+        }
     }
 
     SessionID selectedSessionId;
@@ -1729,7 +2212,32 @@ void UIScene_LoadOrJoinMenu::UpdateGamesList()
                 }
             }
 
+#ifdef _WINDOWS64
+            wstring rowLabel = sessionInfo->displayLabel != NULL ? sessionInfo->displayLabel : L"Unknown Host";
+
+            int playerCount = (int)sessionInfo->data.playerCount;
+            int maxPlayers = (int)sessionInfo->data.maxPlayers;
+            if(maxPlayers <= 0)
+            {
+                maxPlayers = MINECRAFT_NET_MAX_PLAYERS;
+            }
+
+            wchar_t sessionDetail[96];
+            if(m_bMinigamesMode)
+            {
+                const wchar_t *minigameName = GetMinigameNameFromSettings(sessionInfo->data.m_uiGameHostSettings);
+                swprintf(sessionDetail, 96, L" [%d/%d] - %ls", playerCount, maxPlayers, minigameName);
+            }
+            else
+            {
+                swprintf(sessionDetail, 96, L" [%d/%d]", playerCount, maxPlayers);
+            }
+
+            rowLabel += sessionDetail;
+            m_buttonListGames.addItem(rowLabel, textureName);
+#else
             m_buttonListGames.addItem( sessionInfo->displayLabel, textureName );
+#endif
 
             if(memcmp( &selectedSessionId, &sessionInfo->sessionId, sizeof(SessionID) ) == 0)
             {
@@ -3529,3 +4037,7 @@ int UIScene_LoadOrJoinMenu::CopySaveErrorDialogFinishedCallback(void *pParam,int
 }
 
 #endif // _XBOX_ONE
+
+
+
+

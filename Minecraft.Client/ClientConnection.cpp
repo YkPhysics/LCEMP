@@ -47,6 +47,9 @@
 #else
 #include "Common\UI\UI.h"
 #endif
+#ifdef _WINDOWS64
+#include "Common\Network\PlatformNetworkManagerStub.h"
+#endif
 #ifdef __PS3__
 #include "PS3/Network/SonyVoiceChat.h"
 #endif
@@ -56,6 +59,26 @@
 #include "..\Minecraft.World\DurangoStats.h"
 #include "..\Minecraft.World\GenericStats.h"
 #endif
+
+namespace
+{
+	const wstring LCE_TRANSFER_PACKET = L"LCE|Xfer";
+
+	string NarrowAscii(const wstring &value)
+	{
+		string out;
+		out.reserve(value.length());
+		for (size_t i = 0; i < value.length(); ++i)
+		{
+			const wchar_t ch = value[i];
+			if (ch >= 32 && ch <= 126)
+			{
+				out.push_back((char)ch);
+			}
+		}
+		return out;
+	}
+}
 
 ClientConnection::ClientConnection(Minecraft *minecraft, const wstring& ip, int port)
 {
@@ -140,6 +163,19 @@ ClientConnection::~ClientConnection()
 
 void ClientConnection::tick()
 {
+	if (connection == NULL)
+	{
+		return;
+	}
+
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		connection->flush();
+		return;
+	}
+#endif
+
     if (!done) connection->tick();
     connection->flush();
 }
@@ -704,6 +740,17 @@ void ClientConnection::handleAddPainting(shared_ptr<AddPaintingPacket> packet)
 
 void ClientConnection::handleSetEntityMotion(shared_ptr<SetEntityMotionPacket> packet)
 {
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		return;
+	}
+#endif
+	if (!started || level == NULL || minecraft == NULL || minecraft->level == NULL)
+	{
+		return;
+	}
+
     shared_ptr<Entity> e = getEntity(packet->id);
     if (e == NULL) return;
     e->lerpMotion(packet->xa / 8000.0, packet->ya / 8000.0, packet->za / 8000.0);
@@ -1136,6 +1183,16 @@ void ClientConnection::handleDisconnect(shared_ptr<DisconnectPacket> packet)
 {
 	connection->close(DisconnectPacket::eDisconnect_Kicked);
     done = true;
+
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		level = NULL;
+		started = false;
+		app.DebugPrintf("Win64 LAN: Ignoring handleDisconnect during in-progress server transfer\n");
+		return;
+	}
+#endif
 	
 	Minecraft *pMinecraft = Minecraft::GetInstance();
 	pMinecraft->connectionDisconnected( m_userIndex , packet->reason );
@@ -1151,6 +1208,16 @@ void ClientConnection::onDisconnect(DisconnectPacket::eDisconnectReason reason, 
 {
     if (done) return;
     done = true;
+
+#ifdef _WINDOWS64
+	if (CPlatformNetworkManagerStub::IsServerTransferInProgress())
+	{
+		level = NULL;
+		started = false;
+		app.DebugPrintf("Win64 LAN: Ignoring onDisconnect during in-progress server transfer (reason=%d)\n", (int)reason);
+		return;
+	}
+#endif
 
 	Minecraft *pMinecraft = Minecraft::GetInstance();
 	pMinecraft->connectionDisconnected( m_userIndex , reason );
@@ -1281,6 +1348,20 @@ void ClientConnection::handleChat(shared_ptr<ChatPacket> packet)
 
 	switch(packet->m_messageType)
 	{
+	case ChatPacket::e_ChatCustom:
+		if(packet->m_stringArgs.size() >= 2)
+		{
+			message = L"<" + playerDisplayName + L"> " + packet->m_stringArgs[1];
+		}
+		else if(packet->m_stringArgs.size() >= 1)
+		{
+			message = packet->m_stringArgs[0];
+		}
+		else
+		{
+			message = L"";
+		}
+		break;
 	case ChatPacket::e_ChatBedOccupied:
 		message = app.GetString(IDS_TILE_BED_OCCUPIED);
 		break;
@@ -2186,6 +2267,21 @@ void ClientConnection::handleEntityEvent(shared_ptr<EntityEventPacket> packet)
 
 shared_ptr<Entity> ClientConnection::getEntity(int entityId)
 {
+	if (!started || level == NULL || minecraft == NULL || minecraft->level == NULL)
+	{
+		return shared_ptr<Entity>();
+	}
+
+	if (m_userIndex < 0 || m_userIndex >= XUSER_MAX_COUNT)
+	{
+		return shared_ptr<Entity>();
+	}
+
+	if (minecraft->localplayers[m_userIndex] == NULL)
+	{
+		return shared_ptr<Entity>();
+	}
+
 	//if (entityId == minecraft->player->entityId)
 	if(entityId == minecraft->localplayers[m_userIndex]->entityId)
 	{
@@ -2841,7 +2937,15 @@ void ClientConnection::handleTileDestruction(shared_ptr<TileDestructionPacket> p
 
 bool ClientConnection::canHandleAsyncPackets()
 {
-	return minecraft != NULL && minecraft->level != NULL && minecraft->localplayers[m_userIndex] != NULL && level != NULL;
+	if (minecraft == NULL || level == NULL || minecraft->level == NULL || !started)
+	{
+		return false;
+	}
+	if (m_userIndex < 0 || m_userIndex >= XUSER_MAX_COUNT)
+	{
+		return false;
+	}
+	return minecraft->localplayers[m_userIndex] != NULL;
 }
 
 void ClientConnection::handleGameEvent(shared_ptr<GameEventPacket> gameEventPacket)
@@ -3148,6 +3252,41 @@ void ClientConnection::handleSoundEvent(shared_ptr<LevelSoundPacket> packet)
 
 void ClientConnection::handleCustomPayload(shared_ptr<CustomPayloadPacket> customPayloadPacket)
 {
+	if (LCE_TRANSFER_PACKET.compare(customPayloadPacket->identifier) == 0)
+	{
+#ifdef _WINDOWS64
+		ByteArrayInputStream bais(customPayloadPacket->data);
+		DataInputStream input(&bais);
+		const int payloadVersion = (int)input.readUnsignedByte();
+		const int queueIndex = (int)input.readUnsignedByte();
+		const int hostPort = input.readInt();
+		const wstring hostIpW = input.readUTF();
+		const wstring queueLabel = input.readUTF();
+		const string hostIp = NarrowAscii(hostIpW);
+
+		app.DebugPrintf("Win64 LAN: Received transfer payload v%d queue=%d target=%s:%d label=%ls\n",
+			payloadVersion, queueIndex, hostIp.c_str(), hostPort, queueLabel.c_str());
+
+		if (!hostIp.empty() && hostPort > 0)
+		{
+			CPlatformNetworkManagerStub::RequestServerTransfer(hostIp.c_str(), hostPort);
+			wstring message = L"Match found";
+			if (!queueLabel.empty())
+			{
+				message += L" for ";
+				message += queueLabel;
+			}
+			message += L". Transferring...";
+			minecraft->gui->addMessage(message, m_userIndex);
+		}
+		else
+		{
+			app.DebugPrintf("Win64 LAN: Ignoring invalid transfer payload target\n");
+		}
+#endif
+		return;
+	}
+
 	if (CustomPayloadPacket::TRADER_LIST_PACKET.compare(customPayloadPacket->identifier) == 0)
 	{
 		ByteArrayInputStream bais(customPayloadPacket->data);

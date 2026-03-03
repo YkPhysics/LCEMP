@@ -102,12 +102,20 @@ MultiPlayerChunkCache::~MultiPlayerChunkCache()
 {
 	delete emptyChunk;
 	delete waterChunk;
-	delete cache;
-	delete hasData;
+	// Defensive: avoid deleting loaded chunk objects here.
+	// During transfer/exit there can still be shared or duplicated references to chunk internals
+	// (especially light storage) across teardown paths, which can lead to double-free crashes.
+	// We release cache containers and clear references; chunk memory is reclaimed with process lifetime.
+	EnterCriticalSection(&m_csLoadCreate);
+	if (cache != NULL)
+	{
+		memset(cache, 0, XZSIZE * XZSIZE * sizeof(LevelChunk *));
+	}
+	loadedChunkList.clear();
+	LeaveCriticalSection(&m_csLoadCreate);
 
-	AUTO_VAR(itEnd, loadedChunkList.end());
-	for (AUTO_VAR(it, loadedChunkList.begin()); it != itEnd; it++)
-		delete *it;
+	delete[] cache;
+	delete[] hasData;
 
 	DeleteCriticalSection(&m_csLoadCreate);
 }
@@ -172,7 +180,11 @@ LevelChunk *MultiPlayerChunkCache::create(int x, int z)
 		if( g_NetworkManager.IsHost() )		// force here to disable sharing of data
 		{
 			// 4J-JEV: We are about to use shared data, abort if the server is stopped and the data is deleted.
-			if (MinecraftServer::getInstance()->serverHalted()) return NULL;
+			if (MinecraftServer::getInstance()->serverHalted())
+			{
+				LeaveCriticalSection(&m_csLoadCreate);
+				return NULL;
+			}
 
 			// If we're the host, then don't create the chunk, share data from the server's copy 
 #ifdef _LARGE_WORLDS

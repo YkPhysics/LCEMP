@@ -168,7 +168,7 @@ void PIXSetMarkerDeprecated(int a, char *b, ...) {}
 
 bool IsEqualXUID(PlayerUID a, PlayerUID b)
 {
-#if defined(__PS3__) || defined(__ORBIS__) || defined (__PSVITA__) || defined(_DURANGO)
+#if defined(__PS3__) || defined(__ORBIS__) || defined (__PSVITA__) || defined(_DURANGO) || defined(_WINDOWS64)
 	return (a == b);
 #else
 	return false;
@@ -187,6 +187,8 @@ D3DXVECTOR3& D3DXVECTOR3::operator += ( CONST D3DXVECTOR3& add ) { x += add.x; y
 
 #include "Windows64\Network\WinsockNetLayer.h"
 
+extern bool g_Win64DedicatedServerMode;
+
 BYTE IQNetPlayer::GetSmallId() { return m_smallId; }
 void IQNetPlayer::SendData(IQNetPlayer *player, const void *pvData, DWORD dwDataSize, DWORD dwFlags)
 {
@@ -195,7 +197,14 @@ void IQNetPlayer::SendData(IQNetPlayer *player, const void *pvData, DWORD dwData
 		WinsockNetLayer::SendToSmallId(player->m_smallId, pvData, dwDataSize);
 	}
 }
-bool IQNetPlayer::IsSameSystem(IQNetPlayer *player) { return (this == player) || (!m_isRemote && !player->m_isRemote); }
+bool IQNetPlayer::IsSameSystem(IQNetPlayer *player)
+{
+	if (player == NULL)
+	{
+		return false;
+	}
+	return (this == player) || (!m_isRemote && !player->m_isRemote);
+}
 DWORD IQNetPlayer::GetSendQueueSize( IQNetPlayer *player, DWORD dwFlags ) { return 0; }
 DWORD IQNetPlayer::GetCurrentRtt() { return 0; }
 bool IQNetPlayer::IsHost() { return m_isHostPlayer; }
@@ -232,13 +241,17 @@ void Win64_SetupRemoteQNetPlayer(IQNetPlayer *player, BYTE smallId, bool isHost,
 		IQNet::s_playerCount = smallId + 1;
 }
 
+static bool Win64_IsActivePlayer(IQNetPlayer *p, DWORD index);
+
 HRESULT IQNet::AddLocalPlayerByUserIndex(DWORD dwUserIndex){ return S_OK; }
 IQNetPlayer *IQNet::GetHostPlayer() { return &m_player[0]; }
 IQNetPlayer *IQNet::GetLocalPlayerByUserIndex(DWORD dwUserIndex)
 {
 	if (s_isHosting)
 	{
-		if (dwUserIndex < MINECRAFT_NET_MAX_PLAYERS && !m_player[dwUserIndex].m_isRemote)
+		if (dwUserIndex < MINECRAFT_NET_MAX_PLAYERS &&
+			!m_player[dwUserIndex].m_isRemote &&
+			Win64_IsActivePlayer(&m_player[dwUserIndex], dwUserIndex))
 			return &m_player[dwUserIndex];
 		return NULL;
 	}
@@ -246,14 +259,20 @@ IQNetPlayer *IQNet::GetLocalPlayerByUserIndex(DWORD dwUserIndex)
 		return NULL;
 	for (DWORD i = 0; i < s_playerCount; i++)
 	{
-		if (!m_player[i].m_isRemote)
+		if (!m_player[i].m_isRemote && Win64_IsActivePlayer(&m_player[i], i))
 			return &m_player[i];
 	}
 	return NULL;
 }
 static bool Win64_IsActivePlayer(IQNetPlayer *p, DWORD index)
 {
-	if (index == 0) return true;
+	if (index == 0)
+	{
+		// Keep host slot active for index/session-id consistency in server queue logic.
+		// Dedicated mode suppresses host "player count" through advertising logic instead.
+		(void)g_Win64DedicatedServerMode;
+		return true;
+	}
 	return (p->GetCustomDataValue() != 0);
 }
 
@@ -272,19 +291,24 @@ IQNetPlayer *IQNet::GetPlayerByIndex(DWORD dwPlayerIndex)
 }
 IQNetPlayer *IQNet::GetPlayerBySmallId(BYTE SmallId)
 {
-	for (DWORD i = 0; i < s_playerCount; i++)
-	{
-		if (m_player[i].m_smallId == SmallId && Win64_IsActivePlayer(&m_player[i], i)) return &m_player[i];
-	}
-	return NULL;
+	if (SmallId >= MINECRAFT_NET_MAX_PLAYERS)
+		return NULL;
+
+	// On Win64 LAN, clients can receive packets for a newly-joined higher smallId
+	// before local span bookkeeping catches up (e.g. local smallId=1 receiving smallId=2).
+	// Always provide the slot and grow the span so downstream code can materialize it.
+	m_player[SmallId].m_smallId = SmallId;
+	if (SmallId >= s_playerCount)
+		s_playerCount = SmallId + 1;
+	return &m_player[SmallId];
 }
 IQNetPlayer *IQNet::GetPlayerByXuid(PlayerUID xuid)
 {
-	for (DWORD i = 0; i < s_playerCount; i++)
+	for (DWORD i = 0; i < MINECRAFT_NET_MAX_PLAYERS; i++)
 	{
 		if (Win64_IsActivePlayer(&m_player[i], i) && m_player[i].GetXuid() == xuid) return &m_player[i];
 	}
-	return &m_player[0];
+	return NULL;
 }
 DWORD IQNet::GetPlayerCount()
 {
@@ -299,15 +323,29 @@ QNET_STATE IQNet::GetState() { return _iQNetStubState; }
 bool IQNet::IsHost() { return s_isHosting; }
 HRESULT IQNet::JoinGameFromInviteInfo(DWORD dwUserIndex, DWORD dwUserMask, const INVITE_INFO *pInviteInfo) { return S_OK; }
 void IQNet::HostGame() { _iQNetStubState = QNET_STATE_SESSION_STARTING; s_isHosting = true; }
-void IQNet::ClientJoinGame() { _iQNetStubState = QNET_STATE_SESSION_STARTING; s_isHosting = false; }
+void IQNet::ClientJoinGame()
+{
+	_iQNetStubState = QNET_STATE_SESSION_STARTING;
+	s_isHosting = false;
+
+	// Reset all slots so no stale network-player pointers survive between sessions.
+	for (int i = 0; i < MINECRAFT_NET_MAX_PLAYERS; i++)
+	{
+		m_player[i].m_smallId = (BYTE)i;
+		m_player[i].m_isRemote = true;
+		m_player[i].m_isHostPlayer = false;
+		m_player[i].m_gamertag[0] = 0;
+		m_player[i].SetCustomDataValue(0);
+	}
+}
 void IQNet::EndGame()
 {
 	_iQNetStubState = QNET_STATE_IDLE;
 	s_isHosting = false;
 	s_playerCount = 1;
-	for (int i = 1; i < MINECRAFT_NET_MAX_PLAYERS; i++)
+	for (int i = 0; i < MINECRAFT_NET_MAX_PLAYERS; i++)
 	{
-		m_player[i].m_smallId = 0;
+		m_player[i].m_smallId = (BYTE)i;
 		m_player[i].m_isRemote = false;
 		m_player[i].m_isHostPlayer = false;
 		m_player[i].m_gamertag[0] = 0;
