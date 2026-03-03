@@ -1,99 +1,98 @@
-LCEMP is my Minecraft Legacy Console Edition source fork that enables LAN multiplayer hosting.
+# LCEMP
 
-notes:
-  - This is NOT the full source code.
-  - You need to provide the required asset files yourself.
-  - Code quality is not perfect. I am still learning C++.
-  - If you use this in other LCE-based projects, credit me.
+LCEMP is a Minecraft Legacy Console Edition source fork focused on LAN and custom multiplayer features.
 
-features:
-  - Fully working multiplayer
-  - Breaking and placing blocks synced
-  - Kick system
-  - Up to 8 players (modifiable in source)
-  - Keyboard and mouse support
-  - Gamma fixed
-  - Fullscreen support
+## Notes
+- If you reuse this fork in other LCE-based projects, credit **notpies**.
+- Please know most of this stuff is currently half baked and just POC.
 
-launch_arguments:
-  - name: -name
-    usage: "-name <username>"
-    description: Sets your in-game username.
+## Current Features
+- Fully working LAN multiplayer hosting/joining.
+- Block breaking/placing sync.
+- Kick system.
+- Up to 8 players by default (modifiable in source).
+- Keyboard and mouse support.
+- Gamma/fullscreen fixes.
 
-  - name: -ip
-    usage: "-ip <targetip>"
-    description: >
-      Manually connect to an IP if LAN advertising does not work
-      or if the server cannot be discovered automatically.
+### Minigames / Bedwars Foundation
+- Main menu **LCE Minigames** flow.
+- Minigames hub flow for create/join style gameplay.
+- Bedwars-oriented queue foundation:
+  - queue types: solo, doubles, squads, practice
+  - party-aware queueing
+  - host queue-mode switching
+- Server transfer payload channel (`LCE|Xfer`) for cross-server handoff.
+- Bungee-like named route transfer via `proxy-worlds.properties`.
 
-  - name: -port
-    usage: "-port <targetport>"
-    description: >
-      Override the default port if it was changed in the source.
+### Multiplayer Commands
+- Player commands:
+  - `/help`
+  - `/tps`
+  - `/list`
+  - `/party invite|accept|leave|list`
+  - `/queue <solo|doubles|squads|practice|leave>`
+  - `/queuehost <hub|solo|doubles|squads|practice>`
+  - `/hub`
+  - `/server <list|name|reload>`
+- Admin commands:
+  - `/send <player> <server>`
+  - `/kick`, `/ban`, `/pardon`
+  - `/op`, `/deop`
+  - `/tp`
+  - `/gamemode`
+  - `/save-on`, `/save-off`, `/save-all`
+  - `/whitelist`
 
-example:
-  command: "Minecraft.Client.exe -name Steve -ip 192.168.0.25 -port 25565"
+### Dedicated Server (Windows64)
+- Dedicated mode launch support (`-dedicated`).
+- `dedicated-server.properties` configuration support.
+- Runtime dedicated GUI with status/logging and controls:
+  - stop server
+  - refresh
+  - copy connect info
+  - toggle saving
+  - toggle whitelist
+  - kick all players
+- Bind address, port, max players, whitelist, world name, flat world options.
 
-required_assets:
-    directories:
-  - path: Minecraft.Client\music\
-  - path: Minecraft.Client\Common\Media\
-  - path: Minecraft.Client\Common\res\
-  - path: Minecraft.Client\Common\DummyTexturePack\
-  - path: Minecraft.Client\DurangoMedia\
-  - path: Minecraft.Client\OrbisMedia\
-  - path: Minecraft.Client\PS3Media\
-  - path: Minecraft.Client\PSVitaMedia\
-  - path: Minecraft.Client\Windows64Media\
-  - path: Minecraft.Client\redist64\
-  - path: Minecraft.Client\PS3_GAME\
-  - path: Minecraft.Client\PS4_GAME\
-  - path: Minecraft.Client\sce_sys\
-  - path: Minecraft.Client\TROPDIR\
-  - path: Minecraft.Client\PS3\PS3Extras\DirectX\
-  - path: Minecraft.Client\PS3\PS3Extras\HeapInspector\
-  - path: Minecraft.Client\Common\Network\Sony\
-  - path: Minecraft.Client\common\dlc\
-  - path: Minecraft.Client\durango\sound\
-  - path: Minecraft.Client\Xbox\4JLibs\
-  - path: Minecraft.Client\Windows64\4JLibs\
-  - path: Minecraft.Client\PSVita\4JLibs\
-  - path: Minecraft.Client\PS3\4JLibs\
-  - path: Minecraft.Client\Orbis\4JLibs\
-  - path: Minecraft.Client\Durango\4JLibs\
-  - path: Minecraft.Client\Windows64\Miles\
-  - path: Minecraft.Client\PSVita\Miles\
-  - path: Minecraft.Client\PS3\Miles\
-  - path: Minecraft.Client\Orbis\Miles\
-  - path: Minecraft.Client\Durango\Miles\
-  - path: Minecraft.Client\Durango\Iggy\
-  - path: Minecraft.Client\Windows64\Iggy\
-  - path: Minecraft.Client\PSVita\Iggy\
-  - path: Minecraft.Client\PS3\Iggy\
-  - path: Minecraft.Client\Orbis\Iggy\
-  - path: Minecraft.Client\PS3\Sentient\
-  - path: Minecraft.Client\Orbis\Sentient\
-  - path: Minecraft.Client\Durango\Sentient\
-  - path: Minecraft.Client\Xbox\Sentient\
-  - path: Minecraft.Client\Windows64\Sentient\
-  - path: Minecraft.Client\PSVita\Sentient\
-  - path: Minecraft.Client\PS3\PS3Extras\boost_1_53_0\
+## Launch Arguments
+- `-name <username>`: Set local in-game username.
+- `-ip <targetip>`: Connect directly to an IP.
+- `-port <targetport>`: Override target port.
+- `-dedicated`: Run as dedicated server mode.
+- `-bind <address>`: Bind dedicated server network address.
+- `-maxplayers <count>`: Set public slot count.
+- `-world <name>`: Set world/save title.
+- `-servername <name>`: Set advertised server name.
+- `-flat` / `-normal`: Force world type.
+- `-nosave` / `-save`: Toggle save behavior.
+- `-whitelist`: Start with whitelist enabled.
 
-    files:
-  - path: Minecraft.Client\xbox\MinecraftWindows.rc
-  - path: Minecraft.Client\xbox\MinecraftWindows.ico
-  - path: Minecraft.Client\xbox\small.ico
-  - path: x64\Debug\iggy_w64.dll
-  - path: x64\Debug\mss64.dll
+### Example
+`Minecraft.Client.exe -dedicated -bind 0.0.0.0 -port 25565 -maxplayers 8 -world "LCE Dedicated Server" -flat -nosave -whitelist`
 
-install:
-  - Get required assets.
-  - Replace your Minecraft.Client and Minecraft.World source folder with this one.
-  - Build.
-  - Run with optional launch arguments if needed.
+## Transfer Route Config
+Create `proxy-worlds.properties` in the repo root (or executable-relative fallback paths):
 
-contributing:
-  - If you find issues, open a PR.
-  - I will review and merge if valid.
+```properties
+# format: name=host:port|Display Name
+hub=127.0.0.1:25565|Hub
+bedwars=127.0.0.1:25566|Bedwars Match
+practice=127.0.0.1:25567|Practice
+```
 
-author: notpies
+## Required Assets
+See previous README list and ensure all media/resource directories are present before building.
+
+## Install
+1. Get required assets.
+2. Replace your `Minecraft.Client` and `Minecraft.World` source folders with this fork.
+3. Build.
+4. Run with launch arguments as needed.
+
+## Contributing
+- Open a PR for fixes/features.
+- Valid changes will be reviewed and merged.
+
+## Author
+notpies
