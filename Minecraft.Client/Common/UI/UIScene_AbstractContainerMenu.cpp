@@ -1,6 +1,10 @@
-#include "stdafx.h"
+ï»¿#include "stdafx.h"
 #include "UI.h"
 #include "UIScene_AbstractContainerMenu.h"
+
+#ifdef _WINDOWS64
+#include "..\..\KeyboardMouseInput.h"
+#endif
 
 #include "..\..\..\Minecraft.World\net.minecraft.world.inventory.h"
 #include "..\..\..\Minecraft.World\net.minecraft.world.item.h"
@@ -35,6 +39,15 @@ UIScene_AbstractContainerMenu::~UIScene_AbstractContainerMenu()
 void UIScene_AbstractContainerMenu::handleDestroy()
 {
 	app.DebugPrintf("UIScene_AbstractContainerMenu::handleDestroy\n");
+
+#ifdef _WINDOWS64
+	g_savedInventoryCursorPos.x = m_pointerPos.x;
+	g_savedInventoryCursorPos.y = m_pointerPos.y;
+	g_savedInventoryCursorPos.hasSavedPos = true;
+
+	while (ShowCursor(TRUE) < 0);
+#endif
+
 	Minecraft *pMinecraft = Minecraft::GetInstance();
 	if( pMinecraft->localgameModes[m_iPad] != NULL )
 	{
@@ -59,6 +72,7 @@ void UIScene_AbstractContainerMenu::handleDestroy()
 	ui.OverrideSFX(m_iPad,ACTION_MENU_RIGHT,false);
 	ui.OverrideSFX(m_iPad,ACTION_MENU_UP,false);
 	ui.OverrideSFX(m_iPad,ACTION_MENU_DOWN,false);
+
 }
 
 void UIScene_AbstractContainerMenu::InitDataAssociations(int iPad, AbstractContainerMenu *menu, int startIndex)
@@ -67,6 +81,9 @@ void UIScene_AbstractContainerMenu::InitDataAssociations(int iPad, AbstractConta
 
 void UIScene_AbstractContainerMenu::PlatformInitialize(int iPad, int startIndex)
 {
+#ifdef _WINDOWS64
+	while (ShowCursor(FALSE) >= 0);
+#endif
 
 	m_labelInventory.init( app.GetString(IDS_INVENTORY) );
 
@@ -106,8 +123,8 @@ void UIScene_AbstractContainerMenu::PlatformInitialize(int iPad, int startIndex)
 #ifdef __ORBIS__
 	// we need to map the touchpad rectangle to the UI rectangle. While it works great for the creative menu, it is much too sensitive for the smaller menus.
 	//X coordinate of the touch point (0 to 1919)    
-	//Y coordinate of the touch point (0 to 941: DUALSHOCK®4 wireless controllers and the CUH-ZCT1J/CAP-ZCT1J/CAP-ZCT1U controllers for the PlayStation®4 development tool,    
-	//0 to 753: JDX-1000x series controllers for the PlayStation®4 development tool,)     
+	//Y coordinate of the touch point (0 to 941: DUALSHOCKï¿½4 wireless controllers and the CUH-ZCT1J/CAP-ZCT1J/CAP-ZCT1U controllers for the PlayStationï¿½4 development tool,    
+	//0 to 753: JDX-1000x series controllers for the PlayStationï¿½4 development tool,)     
 	m_fTouchPadMulX=fPanelWidth/1919.0f;
 	m_fTouchPadMulY=fPanelHeight/941.0f;
 	m_fTouchPadDeadZoneX=15.0f*m_fTouchPadMulX;
@@ -151,11 +168,33 @@ void UIScene_AbstractContainerMenu::PlatformInitialize(int iPad, int startIndex)
 	//m_pointerControl->SetPosition( &vPointerPos );
 	m_pointerPos = vPointerPos;
 
+	#ifdef _WINDOWS64
+	if (g_savedInventoryCursorPos.hasSavedPos)
+	{
+		m_pointerPos.x = g_savedInventoryCursorPos.x;
+		m_pointerPos.y = g_savedInventoryCursorPos.y;
+
+		if (m_pointerPos.x < m_fPointerMinX) m_pointerPos.x = m_fPointerMinX;
+		if (m_pointerPos.x > m_fPointerMaxX) m_pointerPos.x = m_fPointerMaxX;
+		if (m_pointerPos.y < m_fPointerMinY) m_pointerPos.y = m_fPointerMinY;
+		if (m_pointerPos.y > m_fPointerMaxY) m_pointerPos.y = m_fPointerMaxY;
+	}
+
+	extern HWND g_hWnd;
+	RECT rc;
+	GetClientRect(g_hWnd, &rc);
+	POINT center;
+	center.x = (rc.right - rc.left) / 2;
+	center.y = (rc.bottom - rc.top) / 2;
+	ClientToScreen(g_hWnd, &center);
+	SetCursorPos(center.x, center.y);
+#endif
+
 	IggyEvent mouseEvent;
 	S32 width, height;
 	m_parentLayer->getRenderDimensions(width, height);
 	S32 x = m_pointerPos.x*((float)width/m_movieWidth);
-	S32 y = m_pointerPos.y*((float)height/m_movieHeight); 
+	S32 y = m_pointerPos.y*((float)height/m_movieHeight);
 	IggyMakeEventMouseMove( &mouseEvent, x, y);
 
 	IggyEventResult result;
@@ -173,13 +212,20 @@ void UIScene_AbstractContainerMenu::tick()
 {
 	UIScene::tick();
 
+#ifdef _WINDOWS64
+	SetCursor(NULL);
+#endif
+
+
 	onMouseTick();
 
 	IggyEvent mouseEvent;
 	S32 width, height;
 	m_parentLayer->getRenderDimensions(width, height);
-	S32 x = m_pointerPos.x*((float)width/m_movieWidth);
-	S32 y = m_pointerPos.y*((float)height/m_movieHeight);
+	
+	S32 x = (S32)(m_pointerPos.x * ((float)width / m_movieWidth));
+	S32 y = (S32)(m_pointerPos.y * ((float)height / m_movieHeight));
+
 	IggyMakeEventMouseMove( &mouseEvent, x, y);
 
 	// 4J Stu - This seems to be broken on Durango, so do it ourself
@@ -191,6 +237,7 @@ void UIScene_AbstractContainerMenu::tick()
 	IggyEventResult result;
 	IggyPlayerDispatchEventRS ( getMovie() , &mouseEvent , &result );
 }
+
 
 void UIScene_AbstractContainerMenu::render(S32 width, S32 height, C4JRender::eViewportType viewpBort)
 {

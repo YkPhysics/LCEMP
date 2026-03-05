@@ -18,6 +18,7 @@ Input::Input()
 	wasJumping = false;
 	jumping = false;
 	sneaking = false;
+	sprinting = false;
 
 	lReset = false;
     rReset = false;
@@ -45,7 +46,7 @@ void Input::tick(LocalPlayer *player)
 	float kbXA = 0.0f;
 	float kbYA = 0.0f;
 #ifdef _WINDOWS64
-	if (iPad == 0 && g_KBMInput.IsMouseGrabbed())
+	if (iPad == 0 && g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsKBMActive())
 	{
 		if( pMinecraft->localgameModes[iPad]->isInputAllowed(MINECRAFT_ACTION_LEFT) || pMinecraft->localgameModes[iPad]->isInputAllowed(MINECRAFT_ACTION_RIGHT) )
 			kbXA = g_KBMInput.GetMoveX();
@@ -93,11 +94,35 @@ void Input::tick(LocalPlayer *player)
 	}
 
 #ifdef _WINDOWS64
-	if (iPad == 0 && g_KBMInput.IsMouseGrabbed() && pMinecraft->localgameModes[iPad]->isInputAllowed(MINECRAFT_ACTION_SNEAK_TOGGLE))
+	if (iPad == 0 && g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsKBMActive())
 	{
+		// Left Shift = sneak (hold to crouch)
+		if (pMinecraft->localgameModes[iPad]->isInputAllowed(MINECRAFT_ACTION_SNEAK_TOGGLE))
+		{
+			if (!player->abilities.flying)
+			{
+				sneaking = g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_SNEAK);
+			}
+		}
+
+		// Left Ctrl + forward = sprint (hold to sprint)
 		if (!player->abilities.flying)
 		{
-			sneaking = g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_SNEAK);
+			bool ctrlHeld = g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_SPRINT);
+			bool movingForward = (kbYA > 0.0f);
+
+			if (ctrlHeld && movingForward)
+			{
+				sprinting = true;
+			}
+			else
+			{
+				sprinting = false;
+			}
+		}
+		else
+		{
+			sprinting = false;
 		}
 	}
 #endif
@@ -141,10 +166,10 @@ void Input::tick(LocalPlayer *player)
 	float turnY = ty * abs(ty) * turnSpeed;
 
 #ifdef _WINDOWS64
-	if (iPad == 0 && g_KBMInput.IsMouseGrabbed())
+	if (iPad == 0 && g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsKBMActive())
 	{
 		float mouseSensitivity = ((float)app.GetGameSettings(iPad,eGameSetting_Sensitivity_InGame)) / 100.0f;
-		float mouseLookScale = 1.0f;
+		float mouseLookScale = 5.0f;
 		float mx = g_KBMInput.GetLookX(mouseSensitivity * mouseLookScale);
 		float my = g_KBMInput.GetLookY(mouseSensitivity * mouseLookScale);
 
@@ -165,7 +190,7 @@ void Input::tick(LocalPlayer *player)
 	unsigned int jump = InputManager.GetValue(iPad, MINECRAFT_ACTION_JUMP);
 	bool kbJump = false;
 #ifdef _WINDOWS64
-	kbJump = (iPad == 0) && g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_JUMP);
+	kbJump = (iPad == 0) && g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsKBMActive() && g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_JUMP);
 #endif
 	if( (jump > 0 || kbJump) && pMinecraft->localgameModes[iPad]->isInputAllowed(MINECRAFT_ACTION_JUMP) )
 		jumping = true;

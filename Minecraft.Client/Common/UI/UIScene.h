@@ -109,6 +109,8 @@ public:
 #ifdef __PSVITA__
 	UILayer *GetParentLayer() {return m_parentLayer;}
 	EUIGroup GetParentLayerGroup() {return m_parentLayer->m_parentGroup->GetGroup();}
+#endif
+#if defined(__PSVITA__) || defined(_WINDOWS64)
 	vector<UIControl *> *GetControls() {return &m_controls;}
 #endif
 

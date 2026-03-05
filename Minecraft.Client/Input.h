@@ -10,7 +10,8 @@ public:
     bool wasJumping;
     bool jumping;
     bool sneaking;
-    
+    bool sprinting;
+
 	Input();	// 4J - added
 
     virtual void tick(LocalPlayer *player);

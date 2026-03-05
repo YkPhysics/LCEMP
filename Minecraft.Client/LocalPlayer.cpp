@@ -328,6 +328,12 @@ void LocalPlayer::aiStep()
 		}
 	}
 	if (isSneaking()) sprintTriggerTime = 0;
+	#ifdef _WINDOWS64
+	if (input->sprinting && onGround && enoughFoodToSprint && !isUsingItem() && !hasEffect(MobEffect::blindness) && !isSneaking())
+	{
+		setSprinting(true);
+	}
+#endif
 	// 4J-PB - try not stopping sprint on collision
 	//if (isSprinting() && (input->ya < runTreshold || horizontalCollision || !enoughFoodToSprint))
 	if (isSprinting() && (input->ya < runTreshold || !enoughFoodToSprint))

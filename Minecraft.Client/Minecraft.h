@@ -211,6 +211,7 @@ private:
 public:
 	void destroy();
 	volatile bool running;
+	bool showFpsCounter;
 	wstring fpsString;
 	void run();
 	// 4J-PB - split the run into 3 parts so we can run it from our xbox game loop
