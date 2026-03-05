@@ -29,6 +29,7 @@
 #include "TitleScreen.h"
 #include "InventoryScreen.h"
 #include "InBedChatScreen.h"
+#include "ChatScreen.h"
 #include "AchievementPopup.h"
 #include "Input.h"
 #include "FrustumCuller.h"
@@ -62,7 +63,6 @@
 #include "..\Minecraft.World\StrongholdFeature.h"
 #include "..\Minecraft.World\IntCache.h"
 #include "..\Minecraft.World\Villager.h"
-#include "..\Minecraft.World\EntityIO.h" // for mobs
 #include "..\Minecraft.World\SparseLightStorage.h"
 #include "..\Minecraft.World\SparseDataStorage.h"
 #include "TextureManager.h"
@@ -173,7 +173,6 @@ Minecraft::Minecraft(Component *mouseComponent, Canvas *parent, MinecraftApplet 
 	//lastTickTime = System::currentTimeMillis();
 	recheckPlayerIn = 0;
 	running = true;
-	showFpsCounter = false;
 	unoccupiedQuadrant = -1;
 
 	Stats::init();
@@ -1457,7 +1456,7 @@ void Minecraft::run_middle()
 					{
 						if(InputManager.ButtonDown(i, MINECRAFT_ACTION_SNEAK_TOGGLE))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_SNEAK_TOGGLE;
 #ifdef _WINDOWS64
-						if(i == 0 && g_KBMInput.IsKBMActive() && g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_SNEAK))		localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_SNEAK_TOGGLE;
+						if(i == 0 && g_KBMInput.IsKeyDown(KeyboardMouseInput::KEY_SNEAK))		localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_SNEAK_TOGGLE;
 #endif
 					}
 					else
@@ -1470,40 +1469,21 @@ void Minecraft::run_middle()
 #ifdef _WINDOWS64
 					if (i == 0)
 					{
-						if (g_KBMInput.IsKBMActive())
-						{
-							if(g_KBMInput.IsMouseButtonPressed(KeyboardMouseInput::MOUSE_LEFT))
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_ACTION;
+						if(g_KBMInput.IsMouseButtonPressed(KeyboardMouseInput::MOUSE_LEFT))
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_ACTION;
 
-							if(g_KBMInput.IsMouseButtonPressed(KeyboardMouseInput::MOUSE_RIGHT))
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_USE;
+						if(g_KBMInput.IsMouseButtonPressed(KeyboardMouseInput::MOUSE_RIGHT))
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_USE;
 
-							if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_INVENTORY))
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_INVENTORY;
+						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_INVENTORY))
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_INVENTORY;
 
-							if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_DROP))
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_DROP;
+						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_DROP))
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_DROP;
 
-							if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING) || g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING_ALT))
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_CRAFTING;
+						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_CRAFTING))
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_CRAFTING;
 
-							int wheel = g_KBMInput.GetMouseWheel();
-							if (wheel > 0)
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RIGHT_SCROLL;
-							else if (wheel < 0)
-								localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_LEFT_SCROLL;
-
-							for (int slot = 0; slot < 9; slot++)
-							{
-								if (g_KBMInput.IsKeyPressed('1' + slot))
-								{
-									if (localplayers[i]->inventory)
-										localplayers[i]->inventory->selected = slot;
-								}
-							}
-						}
-
-						// Utility keys always work regardless of KBM active state
 						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_PAUSE))
 						{
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_PAUSEMENU;
@@ -1514,14 +1494,21 @@ void Minecraft::run_middle()
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_THIRD_PERSON;
 
 						if(g_KBMInput.IsKeyPressed(KeyboardMouseInput::KEY_DEBUG_INFO))
-						{
 							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_GAME_INFO;
-							//localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
-						}
 
-						if(g_KBMInput.IsKeyPressed(VK_F4))
+						int wheel = g_KBMInput.GetMouseWheel();
+						if (wheel > 0)
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RIGHT_SCROLL;
+						else if (wheel < 0)
+							localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_LEFT_SCROLL;
+
+						for (int slot = 0; slot < 9; slot++)
 						{
-							showFpsCounter = !showFpsCounter;
+							if (g_KBMInput.IsKeyPressed('1' + slot))
+							{
+								if (localplayers[i]->inventory)
+									localplayers[i]->inventory->selected = slot;
+							}
 						}
 					}
 #endif
@@ -1534,7 +1521,7 @@ void Minecraft::run_middle()
 						localplayers[i]->ullDpad_filtered = 0;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_RIGHT))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_CHANGE_SKIN;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_UP))				localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_FLY_TOGGLE;
-						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_DOWN))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
+						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_DOWN))			//localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_RENDER_DEBUG;
 						if(InputManager.ButtonPressed(i, MINECRAFT_ACTION_DPAD_LEFT))			localplayers[i]->ullButtonsPressed|=1LL<<MINECRAFT_ACTION_SPAWN_CREEPER;
 					}
 					else
@@ -2328,6 +2315,21 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 		if (!g_KBMInput.IsMouseGrabbed() && g_KBMInput.IsWindowFocused())
 		{
 			g_KBMInput.SetMouseGrabbed(true);
+		}
+
+		if (iPad == 0)
+		{
+			const int vkChat = Keyboard::toVK(Keyboard::KEY_T);
+			static bool s_chatKeyWasDown = false;
+			const bool chatKeyDown = (vkChat != 0) && g_KBMInput.IsKeyDown(vkChat);
+			if (chatKeyDown && !s_chatKeyWasDown)
+			{
+				app.DebugPrintf("Chat hotkey pressed - opening ChatScreen");
+				setScreen(new ChatScreen());
+				s_chatKeyWasDown = true;
+				return;
+			}
+			s_chatKeyWasDown = chatKeyDown;
 		}
 #endif
 		// 4J-PB - add some tooltips if required
@@ -3271,7 +3273,7 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 			wheel = -1;
 		}
 #ifdef _WINDOWS64
-		if (iPad == 0 && wheel == 0 && g_KBMInput.IsKBMActive())
+		if (iPad == 0 && wheel == 0)
 		{
 			int mw = g_KBMInput.GetMouseWheel();
 			if (mw > 0) wheel = -1;
@@ -3300,89 +3302,6 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 			}
 		}
 
-#ifdef _WINDOWS64 // allows for the player to get the block they are looking at in creative by middle clicking.
-		if (iPad == 0 && g_KBMInput.IsKBMActive() && player->abilities.instabuild && g_KBMInput.IsMouseButtonPressed(KeyboardMouseInput::MOUSE_MIDDLE) && hitResult != NULL && (hitResult->type == HitResult::TILE || hitResult->type == HitResult::ENTITY))
-		{
-			//printf("MIDDLE CLICK TEST!!"); // windermed was here.
-			int cloneId = -1;
-			int cloneData = 0;
-			bool checkData = false;
-
-			// if its a tile
-			if (hitResult->type == HitResult::TILE)
-			{
-				int tileId = level->getTile(hitResult->x, hitResult->y, hitResult->z);
-				Tile* tile = (tileId > 0 && tileId < Tile::TILE_NUM_COUNT) ? Tile::tiles[tileId] : NULL;
-				if (tile != NULL)
-				{
-					cloneId = tile->cloneTileId(level, hitResult->x, hitResult->y, hitResult->z);
-					cloneData = tile->cloneTileData(level, hitResult->x, hitResult->y, hitResult->z);
-				}
-			}
-
-			// if its an entity
-			else if (hitResult->type == HitResult::ENTITY && hitResult->entity != NULL)
-			{
-				int entityIoId = EntityIO::eTypeToIoid(hitResult->entity->GetType());
-				if (entityIoId > 0 && EntityIO::idsSpawnableInCreative.find(entityIoId) != EntityIO::idsSpawnableInCreative.end())
-				{
-					cloneId = Item::monsterPlacer_Id;
-					cloneData = entityIoId;
-					checkData = true;
-				}
-			}
-
-			// if we have a valid cloneId, try to find it in the quickbar and select it, otherwise just grab it.
-			if (cloneId > 0 && cloneId < Item::ITEM_NUM_COUNT && Item::items[cloneId] != NULL)
-			{
-				if (hitResult->type == HitResult::TILE)
-				{
-					checkData = Item::items[cloneId]->isStackedByData();
-				}
-
-				int quickbarSlot = -1;
-				for (int slot = 0; slot < Inventory::getSelectionSize(); ++slot)
-				{
-					shared_ptr<ItemInstance> quickbarItem = player->inventory->items[slot];
-					if (quickbarItem == NULL || quickbarItem->id != cloneId)
-					{
-						continue;
-					}
-
-					if (!checkData || quickbarItem->getAuxValue() == cloneData)
-					{
-						quickbarSlot = slot;
-						break;
-					}
-				}
-
-				if (quickbarSlot >= 0)
-				{
-					player->inventory->selected = quickbarSlot;
-				}
-				else
-				{
-					player->inventory->grabTexture(cloneId, cloneData, checkData, true);
-				}
-
-				// should prevent ghost items/blocks
-				shared_ptr<ItemInstance> selectedItem = player->inventory->getSelected();
-				if (gameMode != NULL && selectedItem != NULL)
-				{
-					const int creativeQuickbarSlotStart = 36; 
-					gameMode->handleCreativeModeItemAdd(selectedItem, creativeQuickbarSlotStart + player->inventory->selected);
-				}
-
-				if (gameMode != NULL && gameMode->getTutorial() != NULL)
-				{
-					gameMode->getTutorial()->onSelectedItemChanged(player->inventory->getSelected());
-				}
-
-				player->updateRichPresence();
-			}
-		}
-#endif
-
 		if( gameMode->isInputAllowed(MINECRAFT_ACTION_ACTION) )
 		{
 			if((player->ullButtonsPressed&(1LL<<MINECRAFT_ACTION_ACTION)))
@@ -3394,7 +3313,7 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 			}
 
 #ifdef _WINDOWS64
-			bool actionHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_ACTION) || (iPad == 0 && g_KBMInput.IsKBMActive() && g_KBMInput.IsMouseButtonDown(KeyboardMouseInput::MOUSE_LEFT));
+			bool actionHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_ACTION) || (iPad == 0 && g_KBMInput.IsMouseButtonDown(KeyboardMouseInput::MOUSE_LEFT));
 #else
 			bool actionHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_ACTION);
 #endif
@@ -3425,7 +3344,7 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 		}
 		*/
 #ifdef _WINDOWS64
-		bool useHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_USE) || (iPad == 0 && g_KBMInput.IsKBMActive() && g_KBMInput.IsMouseButtonDown(KeyboardMouseInput::MOUSE_RIGHT));
+		bool useHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_USE) || (iPad == 0 && g_KBMInput.IsMouseButtonDown(KeyboardMouseInput::MOUSE_RIGHT));
 #else
 		bool useHeld = InputManager.ButtonDown(iPad, MINECRAFT_ACTION_USE);
 #endif
@@ -3779,7 +3698,7 @@ void Minecraft::tick(bool bFirst, bool bUpdateTextures)
 					if (Keyboard.getEventKey() == options.keyDrop.key) {
 						player->drop();
 					}
-					if (isClientSide() && Keyboard.getEventKey() == options.keyChat.key) {
+					if ((isClientSide() || g_NetworkManager.IsInSession()) && Keyboard.getEventKey() == options.keyChat.key) {
 						setScreen(new ChatScreen());
 					}
 				}
@@ -5077,4 +4996,3 @@ int Minecraft::MustSignInReturnedPSN(void *pParam, int iPad, C4JStorage::EMessag
     return 0;
 }
 #endif
-
